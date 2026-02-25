@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy Policy — English to Korean Translator</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          sans-serif;
+        font-size: 16px;
+        line-height: 1.7;
+        color: #1a1a1a;
+        background: #fafafa;
+        padding: 40px 20px;
+      }
+      .container {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 8px;
+      }
+      .subtitle {
+        color: #666;
+        font-size: 14px;
+        margin-bottom: 32px;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 28px 0 12px;
+        padding-top: 20px;
+        border-top: 1px solid #eee;
+      }
+      h2:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+      p {
+        margin-bottom: 14px;
+        color: #333;
+      }
+      ul {
+        margin: 0 0 14px 24px;
+        color: #333;
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      strong {
+        color: #1a1a1a;
+      }
+      .highlight {
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin: 16px 0;
+      }
+      .highlight p {
+        margin-bottom: 0;
+        color: #166534;
+      }
+      a {
+        color: #2563eb;
+      }
+      .footer {
+        margin-top: 40px;
+        padding-top: 20px;
+        border-top: 1px solid #eee;
+        font-size: 13px;
+        color: #999;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Privacy Policy</h1>
+      <p class="subtitle">
+        English to Korean Translator — Chrome Extension<br />Last updated:
+        February 19, 2026
+      </p>
+
+      <div class="highlight">
+        <p>
+          <strong>Summary:</strong> This extension does not collect, store, or
+          transmit any personal data to any server owned or operated by the
+          developer. All data stays in your browser.
+        </p>
+      </div>
+
+      <h2>1. Overview</h2>
+      <p>
+        English to Korean Translator ("the Extension") is a Chrome browser
+        extension that extracts English words from webpages, translates them to
+        Korean, and provides AI-powered vocabulary analysis. This privacy policy
+        explains what data the Extension accesses, how it is used, and how it is
+        stored.
+      </p>
+
+      <h2>2. Data We Do NOT Collect</h2>
+      <ul>
+        <li>
+          We do <strong>not</strong> collect any personally identifiable
+          information (name, email, address, etc.).
+        </li>
+        <li>
+          We do <strong>not</strong> track your browsing history or browsing
+          behavior.
+        </li>
+        <li>We do <strong>not</strong> use cookies or analytics trackers.</li>
+        <li>
+          We do <strong>not</strong> sell, share, or transfer any user data to
+          third parties.
+        </li>
+        <li>
+          We do <strong>not</strong> have any server or backend — there is no
+          place for data to be sent to.
+        </li>
+      </ul>
+
+      <h2>3. Data Accessed Locally</h2>
+      <p>
+        The Extension accesses the following data, all of which remains on your
+        device:
+      </p>
+
+      <p><strong>Webpage Text Content</strong></p>
+      <ul>
+        <li>
+          The Extension reads the visible text of the current webpage to extract
+          English words.
+        </li>
+        <li>
+          This text is processed entirely within your browser and is not
+          transmitted anywhere except to the third-party APIs described in
+          Section 4 (only when you interact with the Extension).
+        </li>
+      </ul>
+
+      <p><strong>API Keys (User-Provided)</strong></p>
+      <ul>
+        <li>
+          The Extension requires you to provide your own API key for Claude
+          (Anthropic) or Gemini (Google) to use the AI-powered word analysis
+          feature.
+        </li>
+        <li>
+          Your API keys are stored locally in your browser using
+          <code>chrome.storage.sync</code>.
+        </li>
+        <li>
+          API keys are <strong>never</strong> sent to any server owned by the
+          developer. They are only sent directly from your browser to the
+          respective API provider (Anthropic or Google) when you request word
+          analysis.
+        </li>
+      </ul>
+
+      <p><strong>Cached Translations & Word Details</strong></p>
+      <ul>
+        <li>
+          Translated words and AI analysis results are cached locally in
+          <code>chrome.storage.local</code> to avoid redundant API calls and
+          improve performance.
+        </li>
+        <li>This data remains entirely on your device.</li>
+      </ul>
+
+      <p><strong>Saved Words & Preferences</strong></p>
+      <ul>
+        <li>
+          Words you bookmark for review and your settings (AI provider choice,
+          model selection) are stored in <code>chrome.storage.sync</code>.
+        </li>
+        <li>
+          Chrome may sync this data across your signed-in Chrome browsers via
+          your Google account, as part of Chrome's built-in sync feature. The
+          developer has no access to this sync process.
+        </li>
+      </ul>
+
+      <h2>4. Third-Party Services</h2>
+      <p>
+        The Extension communicates directly with the following third-party APIs
+        from your browser:
+      </p>
+
+      <p>
+        <strong>Google Translate API</strong>
+        (<code>translate.googleapis.com</code>)
+      </p>
+      <ul>
+        <li>Used for basic English-to-Korean word translation.</li>
+        <li>
+          Sends individual English words to Google's public translation
+          endpoint.
+        </li>
+        <li>No API key required. No personal data is sent.</li>
+        <li>
+          Subject to
+          <a href="https://policies.google.com/privacy" target="_blank"
+            >Google's Privacy Policy</a
+          >.
+        </li>
+      </ul>
+
+      <p>
+        <strong>Anthropic Claude API</strong> (<code>api.anthropic.com</code>)
+      </p>
+      <ul>
+        <li>
+          Used for detailed word and phrase analysis (grammar, idioms, examples)
+          when Claude is selected as the AI provider.
+        </li>
+        <li>
+          Only called when you click on a word or submit a phrase — never
+          automatically.
+        </li>
+        <li>
+          Sends the word/phrase and optional sentence context from the webpage.
+          Uses your own API key.
+        </li>
+        <li>
+          Subject to
+          <a href="https://www.anthropic.com/privacy" target="_blank"
+            >Anthropic's Privacy Policy</a
+          >.
+        </li>
+      </ul>
+
+      <p>
+        <strong>Google Gemini API</strong>
+        (<code>generativelanguage.googleapis.com</code>)
+      </p>
+      <ul>
+        <li>
+          Used as an alternative AI provider for word and phrase analysis when
+          Gemini is selected.
+        </li>
+        <li>
+          Same usage pattern as Claude — only called on user interaction. Uses
+          your own API key.
+        </li>
+        <li>
+          Subject to
+          <a href="https://policies.google.com/privacy" target="_blank"
+            >Google's Privacy Policy</a
+          >.
+        </li>
+      </ul>
+
+      <h2>5. Permissions Used</h2>
+      <ul>
+        <li>
+          <strong>activeTab</strong> — Read text from the current webpage when
+          you open the side panel.
+        </li>
+        <li>
+          <strong>scripting</strong> — Inject a content script to extract
+          English words from the page text.
+        </li>
+        <li>
+          <strong>sidePanel</strong> — Display the Extension's main interface as
+          a side panel.
+        </li>
+        <li>
+          <strong>storage</strong> — Store translations, preferences, saved
+          words, and API keys locally in your browser.
+        </li>
+        <li>
+          <strong>tabs</strong> — Detect page navigation to automatically
+          extract words from the new page.
+        </li>
+      </ul>
+
+      <h2>6. Data Retention</h2>
+      <ul>
+        <li>
+          Session data (current page words, translation status) is cleared when
+          you close the browser.
+        </li>
+        <li>
+          Cached translations and word details persist in local storage until
+          you uninstall the Extension or clear browser data.
+        </li>
+        <li>
+          You can delete all stored data at any time by uninstalling the
+          Extension or clearing site data in Chrome settings.
+        </li>
+      </ul>
+
+      <h2>7. Children's Privacy</h2>
+      <p>
+        The Extension does not knowingly collect any data from children under
+        13. Since no personal data is collected from any user, this Extension is
+        safe for use by all ages.
+      </p>
+
+      <h2>8. Changes to This Policy</h2>
+      <p>
+        If this privacy policy is updated, the changes will be reflected on this
+        page with an updated "Last updated" date. Continued use of the Extension
+        after changes constitutes acceptance of the updated policy.
+      </p>
+
+      <h2>9. Contact</h2>
+      <p>If you have questions about this privacy policy, please contact:</p>
+      <p>Email: <strong>[YOUR_EMAIL]</strong></p>
+
+      <div class="footer">
+        <p>&copy; 2026 English to Korean Translator. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+</html>

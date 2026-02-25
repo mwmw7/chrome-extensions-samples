@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings — English to Korean Translator</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          sans-serif;
+        font-size: 14px;
+        color: #1a1a1a;
+        background: #fafafa;
+        display: flex;
+        justify-content: center;
+        padding: 40px 16px;
+      }
+
+      .container {
+        width: 100%;
+        max-width: 420px;
+      }
+
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 24px;
+      }
+
+      h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 12px;
+        padding-top: 20px;
+        border-top: 1px solid #eee;
+      }
+
+      h2:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+        font-size: 12px;
+        color: #555;
+      }
+
+      .hint {
+        font-size: 11px;
+        color: #888;
+        margin-bottom: 8px;
+      }
+
+      input[type='password'],
+      select {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 13px;
+        margin-bottom: 14px;
+        background: #fff;
+      }
+
+      .provider-group {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+
+      .provider-option {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 0;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        color: #666;
+        background: #fff;
+        transition: all 0.15s;
+      }
+
+      .provider-option:hover {
+        border-color: #aaa;
+      }
+
+      .provider-option.selected {
+        border-color: #2563eb;
+        color: #2563eb;
+        background: #eff6ff;
+      }
+
+      .provider-option input[type='radio'] {
+        display: none;
+      }
+
+      .key-section {
+        display: none;
+      }
+
+      .key-section.visible {
+        display: block;
+      }
+
+      button {
+        padding: 8px 20px;
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      button:hover {
+        background: #1d4ed8;
+      }
+
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        color: #16a34a;
+        min-height: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Settings</h1>
+
+      <!-- AI Provider -->
+      <h2>AI Provider</h2>
+      <div class="hint">
+        Choose which AI to use for word details (grammar, idioms, examples).
+        Basic translations always use Google Translate.
+      </div>
+      <div class="provider-group">
+        <label class="provider-option selected" data-provider="claude">
+          <input type="radio" name="provider" value="claude" checked />
+          Claude
+        </label>
+        <label class="provider-option" data-provider="gemini">
+          <input type="radio" name="provider" value="gemini" />
+          Gemini
+        </label>
+      </div>
+
+      <!-- Claude section -->
+      <div class="key-section visible" id="claude-section">
+        <h2>Claude</h2>
+        <label for="claude-key-input">API Key</label>
+        <input type="password" id="claude-key-input" placeholder="sk-ant-..." />
+
+        <label for="claude-model-select">Model</label>
+        <select id="claude-model-select">
+          <option value="claude-haiku-4-5-20251001">Haiku 4.5 (Fast)</option>
+          <option value="claude-sonnet-4-5-20250929">
+            Sonnet 4.5 (Balanced)
+          </option>
+          <option value="claude-sonnet-4-6-20250514">
+            Sonnet 4.6 (Latest)
+          </option>
+        </select>
+      </div>
+
+      <!-- Gemini section -->
+      <div class="key-section" id="gemini-section">
+        <h2>Gemini</h2>
+        <label for="gemini-key-input">API Key</label>
+        <input type="password" id="gemini-key-input" placeholder="AIza..." />
+
+        <label for="gemini-model-select">Model</label>
+        <select id="gemini-model-select">
+          <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+          <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
+          <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+          <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+        </select>
+      </div>
+
+      <button id="save-btn">Save</button>
+      <div id="status"></div>
+
+      <!-- Support -->
+      <h2>Support the Developer</h2>
+      <div class="hint">
+        If this extension helps you learn English, consider supporting its
+        development!
+      </div>
+      <a
+        href="https://buymeacoffee.com/mwmw77"
+        target="_blank"
+        style="
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 20px;
+          background: #ffdd00;
+          color: #000;
+          border-radius: 8px;
+          text-decoration: none;
+          font-size: 14px;
+          font-weight: 700;
+          margin-top: 4px;
+        "
+      >
+        <img
+          src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
+          alt=""
+          width="20"
+          height="20"
+        />
+        Buy me a coffee
+      </a>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

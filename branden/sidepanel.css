@@ -1,0 +1,738 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  padding: 12px;
+  color: #1a1a1a;
+  background: #fafafa;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* --- Toolbar --- */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+#toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#ai-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.ai-badge-claude {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.ai-badge-gemini {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+#bmc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  background: #FFDD00;
+  border-radius: 5px;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: #000;
+  line-height: 1;
+  transition: opacity 0.15s;
+}
+
+#bmc-link:hover {
+  opacity: 0.85;
+}
+
+#bmc-link span {
+  font-size: 11px;
+}
+
+#settings-link {
+  font-size: 18px;
+  color: #888;
+  text-decoration: none;
+  line-height: 1;
+}
+
+#settings-link:hover {
+  color: #2563eb;
+}
+
+#status {
+  font-size: 12px;
+  color: #666;
+  min-height: 16px;
+}
+
+/* --- Tabs --- */
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.tab {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  text-align: center;
+}
+
+.tab:hover {
+  background: #f0f4ff;
+}
+
+.tab.active {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+
+.tab span {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.25);
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 2px;
+}
+
+.tab.active span {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* --- List view --- */
+
+#word-count {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+#export-btn {
+  padding: 5px 14px;
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+#export-btn:hover {
+  background: #15803d;
+}
+
+/* --- Filter bar --- */
+
+#filter-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: 3px 10px;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+}
+
+.filter-btn:hover {
+  background: #f0f4ff;
+}
+
+.filter-btn.active {
+  color: #fff;
+  border-color: transparent;
+}
+
+.filter-btn.active[data-filter="all"] {
+  background: #475569;
+}
+
+.filter-btn.active[data-filter="basic"] {
+  background: #16a34a;
+}
+
+.filter-btn.active[data-filter="intermediate"] {
+  background: #3b82f6;
+}
+
+.filter-btn.active[data-filter="advanced"] {
+  background: #f59e0b;
+}
+
+.filter-btn.active[data-filter="toefl"] {
+  background: #7c3aed;
+}
+
+#search-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+#word-list {
+  overflow-y: auto;
+  max-height: calc(100vh - 190px);
+}
+
+/* --- Word rows --- */
+
+.word-row {
+  border-bottom: 1px solid #eee;
+  font-size: 13px;
+}
+
+.word-row.intermediate {
+  border-left: 3px solid #3b82f6;
+}
+
+.word-row.advanced {
+  border-left: 3px solid #f59e0b;
+}
+
+.word-main {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  gap: 6px;
+}
+
+.word-row:hover .word-main {
+  background: #f0f4ff;
+}
+
+.word-en {
+  color: #1a1a1a;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.word-ko {
+  color: #2563eb;
+  margin-left: auto;
+  text-align: right;
+}
+
+.badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.badge-int {
+  color: #2563eb;
+  background: #dbeafe;
+}
+
+.badge-adv {
+  color: #f59e0b;
+  background: #fef3c7;
+}
+
+.badge-toefl {
+  color: #7c3aed;
+  background: #ede9fe;
+}
+
+/* Save button */
+
+.save-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  color: #ccc;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.save-btn:hover {
+  color: #facc15;
+}
+
+.save-btn.saved {
+  color: #facc15;
+}
+
+/* Speak button */
+
+.speak-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  color: #94a3b8;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.speak-btn:hover {
+  color: #2563eb;
+}
+
+.speak-btn.speaking {
+  color: #2563eb;
+}
+
+/* --- Detail panel --- */
+
+.word-detail {
+  padding: 8px 12px 10px;
+  background: #f8fafc;
+  border-top: 1px dashed #e2e8f0;
+}
+
+/* Contextual meaning (shown first) */
+
+.detail-context {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.detail-context .detail-label {
+  color: #b45309;
+}
+
+.context-sentence {
+  font-size: 12px;
+  color: #78716c;
+  font-style: italic;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.context-korean {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d97706;
+  margin-bottom: 3px;
+}
+
+.context-explanation {
+  font-size: 11px;
+  color: #92400e;
+  line-height: 1.5;
+}
+
+/* Dictionary definitions */
+
+.detail-def {
+  font-size: 12px;
+  margin-bottom: 4px;
+  padding-left: 8px;
+  border-left: 2px solid #6366f1;
+}
+
+.def-pos {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #6366f1;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+
+.def-meaning {
+  display: block;
+  color: #334155;
+  font-weight: 500;
+  margin-top: 1px;
+}
+
+.def-example {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+  margin-top: 1px;
+}
+
+.detail-loading {
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.detail-error {
+  font-size: 12px;
+  color: #dc2626;
+  padding: 4px 0;
+}
+
+.detail-section {
+  margin-bottom: 8px;
+}
+
+.detail-section:last-child {
+  margin-bottom: 0;
+}
+
+.detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 2px;
+}
+
+.detail-text {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.detail-idiom {
+  font-size: 12px;
+  margin-bottom: 3px;
+  padding-left: 8px;
+  border-left: 2px solid #a78bfa;
+}
+
+.idiom-expr {
+  display: block;
+  color: #5b21b6;
+  font-weight: 500;
+}
+
+.idiom-meaning {
+  display: block;
+  color: #475569;
+  font-size: 11px;
+}
+
+.detail-example {
+  font-size: 12px;
+  margin-bottom: 3px;
+  padding-left: 8px;
+  border-left: 2px solid #cbd5e1;
+}
+
+.ex-en {
+  display: block;
+  color: #334155;
+}
+
+.ex-ko {
+  display: block;
+  color: #2563eb;
+  font-size: 11px;
+}
+
+.detail-syn-ant {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detail-syn-ant .detail-label {
+  display: inline;
+  margin-right: 4px;
+}
+
+.syn-list {
+  font-size: 12px;
+  color: #16a34a;
+}
+
+.ant-list {
+  font-size: 12px;
+  color: #dc2626;
+}
+
+/* =====================
+   PHRASE MODE
+   ===================== */
+
+.phrase-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+#phrase-input-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+#phrase-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+#phrase-input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+#phrase-ask-btn {
+  padding: 8px 14px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#phrase-ask-btn:hover {
+  background: #1d4ed8;
+}
+
+#phrase-ask-btn:disabled {
+  background: #94a3b8;
+  cursor: wait;
+}
+
+#phrase-history {
+  overflow-y: auto;
+  max-height: calc(100vh - 180px);
+}
+
+.phrase-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.phrase-card-query {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 6px;
+}
+
+.phrase-card-loading {
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.phrase-korean {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2563eb;
+  margin-bottom: 8px;
+}
+
+.phrase-section {
+  margin-bottom: 8px;
+}
+
+.phrase-section:last-child {
+  margin-bottom: 0;
+}
+
+.phrase-context-box {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.phrase-context-box .detail-label {
+  color: #b45309;
+}
+
+.phrase-context-box .detail-text {
+  color: #92400e;
+}
+
+/* =====================
+   REVIEW MODE
+   ===================== */
+
+#review-view {
+  text-align: center;
+}
+
+#review-empty {
+  padding: 40px 0;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+#review-card {
+  padding: 12px 0;
+}
+
+#review-progress {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 16px;
+}
+
+#review-word-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+#review-word {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+#review-word-row .speak-btn {
+  font-size: 20px;
+}
+
+#review-answer {
+  text-align: left;
+  background: #f0f4ff;
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+#review-korean {
+  font-size: 20px;
+  font-weight: 600;
+  color: #2563eb;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+#review-detail {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.review-info {
+  margin-bottom: 8px;
+}
+
+.review-info strong {
+  color: #334155;
+}
+
+.review-ex {
+  margin: 3px 0 3px 8px;
+  padding-left: 8px;
+  border-left: 2px solid #cbd5e1;
+}
+
+.review-context {
+  background: #fffbeb;
+  border-radius: 6px;
+  padding: 8px;
+  border: 1px solid #fde68a;
+}
+
+.review-context-korean {
+  font-weight: 600;
+  color: #d97706;
+  margin-top: 4px;
+}
+
+.review-context-explain {
+  font-size: 11px;
+  color: #92400e;
+  margin-top: 2px;
+}
+
+.review-def {
+  margin: 2px 0 2px 8px;
+  padding-left: 6px;
+  border-left: 2px solid #6366f1;
+}
+
+/* Review buttons */
+
+#review-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+#review-actions button {
+  padding: 8px 24px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#review-show {
+  background: #2563eb;
+  color: #fff;
+}
+
+#review-show:hover {
+  background: #1d4ed8;
+}
+
+#review-next {
+  background: #16a34a;
+  color: #fff;
+}
+
+#review-next:hover {
+  background: #15803d;
+}

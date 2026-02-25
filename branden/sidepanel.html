@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>English to Korean Translator</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div id="toolbar">
+      <div id="status"></div>
+      <div id="toolbar-right">
+        <span id="ai-badge" title="Current AI provider"></span>
+        <a
+          href="https://buymeacoffee.com/mwmw77"
+          target="_blank"
+          id="bmc-link"
+          title="Buy me a coffee"
+        >
+          <img
+            src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
+            alt=""
+            width="15"
+            height="15"
+            style="vertical-align: middle"
+          />
+          <span>Coffee</span>
+        </a>
+        <a href="#" id="settings-link" title="Settings">&#9881;</a>
+      </div>
+    </div>
+
+    <div id="tabs">
+      <button class="tab active" data-tab="all">All</button>
+      <button class="tab" data-tab="saved">
+        Saved <span id="saved-count">0</span>
+      </button>
+      <button class="tab" data-tab="phrase">Phrase</button>
+      <button class="tab" data-tab="review">Review</button>
+    </div>
+
+    <!-- All / Saved view -->
+    <div id="list-view">
+      <div id="word-count"></div>
+      <button id="export-btn" class="hidden">📥 Export Excel</button>
+      <div id="filter-bar">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="basic">Basic</button>
+        <button class="filter-btn" data-filter="intermediate">INT</button>
+        <button class="filter-btn" data-filter="advanced">ADV</button>
+        <button class="filter-btn" data-filter="toefl">TOEFL</button>
+      </div>
+      <input type="text" id="search-input" placeholder="Search words..." />
+      <div id="word-list"></div>
+    </div>
+
+    <!-- Phrase view -->
+    <div id="phrase-view" class="hidden">
+      <div class="phrase-hint">
+        Type a phrase from the article you don't understand
+      </div>
+      <div id="phrase-input-row">
+        <input
+          type="text"
+          id="phrase-input"
+          placeholder="e.g. carry out, as a matter of fact..."
+        />
+        <button id="phrase-ask-btn">Ask AI</button>
+      </div>
+      <div id="phrase-history"></div>
+    </div>
+
+    <!-- Review view -->
+    <div id="review-view" class="hidden">
+      <div id="review-empty" class="hidden">No saved words to review.</div>
+      <div id="review-card" class="hidden">
+        <div id="review-progress"></div>
+        <div id="review-word-row">
+          <div id="review-word"></div>
+          <button
+            id="review-speak"
+            class="speak-btn"
+            title="Listen to pronunciation"
+          >
+            &#128264;
+          </button>
+        </div>
+        <div id="review-answer" class="hidden">
+          <div id="review-korean"></div>
+          <div id="review-detail"></div>
+        </div>
+        <div id="review-actions">
+          <button id="review-show">Show Answer</button>
+          <button id="review-next" class="hidden">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="libs/xlsx.mini.min.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
