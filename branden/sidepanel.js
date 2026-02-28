@@ -21,6 +21,7 @@ let wordContexts = {}; // { word: "sentence from page" }
 let pageText = ''; // truncated page content for phrase lookups
 let savedWords = {}; // { word: timestamp }
 let aiProvider = 'claude';
+let accessMode = 'pro';
 let openWord = null;
 let currentTab = 'all'; // 'all' | 'saved' | 'review'
 let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 'toefl'
@@ -92,9 +93,10 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
 });
 
 // --- Load data ---
-chrome.storage.sync.get(['savedWords', 'aiProvider'], (data) => {
+chrome.storage.sync.get(['savedWords', 'aiProvider', 'accessMode'], (data) => {
   savedWords = data.savedWords || {};
   aiProvider = data.aiProvider || 'claude';
+  accessMode = data.accessMode || 'pro';
   updateSavedCount();
   updateAiBadge();
 });
@@ -161,6 +163,10 @@ chrome.storage.sync.onChanged.addListener((changes) => {
     aiProvider = changes.aiProvider.newValue || 'claude';
     updateAiBadge();
   }
+  if (changes.accessMode) {
+    accessMode = changes.accessMode.newValue || 'pro';
+    updateAiBadge();
+  }
 });
 
 // --- Search ---
@@ -186,8 +192,14 @@ function updateSavedCount() {
 }
 
 function updateAiBadge() {
-  aiBadge.textContent = aiProvider === 'gemini' ? 'Gemini' : 'Claude';
-  aiBadge.className = 'ai-badge-' + aiProvider;
+  if (accessMode === 'pro') {
+    aiBadge.textContent = 'Pro';
+    aiBadge.className = 'ai-badge-pro';
+  } else {
+    const badgeNames = { claude: 'Claude', gemini: 'Gemini', openai: 'OpenAI' };
+    aiBadge.textContent = badgeNames[aiProvider] || aiProvider;
+    aiBadge.className = 'ai-badge-' + aiProvider;
+  }
 }
 
 // =====================
@@ -333,8 +345,34 @@ function render() {
         chrome.runtime.sendMessage(
           { type: 'FETCH_WORD_DETAIL', word, context: ctx },
           (resp) => {
+            if (resp && resp.error === 'NO_ACCESS_CODE') {
+              const el = document.querySelector('.word-detail:not(.hidden)');
+              if (el)
+                el.innerHTML =
+                  '<div class="detail-error">Settings에서 액세스 코드를 입력하세요.</div>';
+              return;
+            }
+            if (resp && resp.error === 'INVALID_ACCESS_CODE') {
+              const el = document.querySelector('.word-detail:not(.hidden)');
+              if (el)
+                el.innerHTML =
+                  '<div class="detail-error">유효하지 않은 액세스 코드입니다. Settings에서 확인하세요.</div>';
+              return;
+            }
+            if (resp && resp.error === 'RATE_LIMITED') {
+              const el = document.querySelector('.word-detail:not(.hidden)');
+              if (el)
+                el.innerHTML =
+                  '<div class="detail-error">요청 한도 초과 — 잠시 후 다시 시도하세요. (시간당 30회)</div>';
+              return;
+            }
             if (resp && resp.error === 'NO_API_KEY') {
-              const name = resp.provider === 'gemini' ? 'Gemini' : 'Claude';
+              const providerNames = {
+                claude: 'Claude',
+                gemini: 'Gemini',
+                openai: 'OpenAI'
+              };
+              const name = providerNames[resp.provider] || resp.provider;
               const el = document.querySelector('.word-detail:not(.hidden)');
               if (el)
                 el.innerHTML = `<div class="detail-error">Set your ${name} API key in Settings to see details.</div>`;
@@ -605,8 +643,28 @@ function submitPhrase() {
       phraseAskBtn.disabled = false;
       phraseAskBtn.textContent = 'Ask AI';
 
+      if (resp && resp.error === 'NO_ACCESS_CODE') {
+        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
+          <div class="detail-error">Settings에서 액세스 코드를 입력하세요.</div>`;
+        return;
+      }
+      if (resp && resp.error === 'INVALID_ACCESS_CODE') {
+        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
+          <div class="detail-error">유효하지 않은 액세스 코드입니다.</div>`;
+        return;
+      }
+      if (resp && resp.error === 'RATE_LIMITED') {
+        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
+          <div class="detail-error">요청 한도 초과 — 잠시 후 다시 시도하세요. (시간당 30회)</div>`;
+        return;
+      }
       if (resp && resp.error === 'NO_API_KEY') {
-        const name = resp.provider === 'gemini' ? 'Gemini' : 'Claude';
+        const providerNames = {
+          claude: 'Claude',
+          gemini: 'Gemini',
+          openai: 'OpenAI'
+        };
+        const name = providerNames[resp.provider] || resp.provider;
         card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
           <div class="detail-error">Set your ${name} API key in Settings.</div>`;
         return;

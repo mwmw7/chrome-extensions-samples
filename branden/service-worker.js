@@ -3,6 +3,9 @@ importScripts('common-words.js', 'toefl-words.js');
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
+// TODO: Replace with your actual Worker URL after `npx wrangler deploy`
+const PROXY_URL = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
+
 const memoryCache = new Map();
 const BATCH_SIZE = 50;
 
@@ -234,15 +237,32 @@ async function fetchWordDetail(word, context) {
   const settings = await chrome.storage.sync.get([
     'apiKey',
     'geminiKey',
+    'openaiKey',
     'aiProvider',
     'geminiModel',
-    'claudeModel'
+    'claudeModel',
+    'openaiModel',
+    'accessMode',
+    'accessCode'
   ]);
-  const provider = settings.aiProvider || 'claude';
+  const accessMode = settings.accessMode || 'pro';
+  const provider =
+    accessMode === 'pro' ? 'pro' : settings.aiProvider || 'claude';
 
-  const apiKey = provider === 'gemini' ? settings.geminiKey : settings.apiKey;
-  if (!apiKey) {
-    return { error: 'NO_API_KEY', provider };
+  // Validate credentials
+  if (accessMode === 'pro') {
+    if (!settings.accessCode) {
+      return { error: 'NO_ACCESS_CODE', provider: 'pro' };
+    }
+  } else {
+    const apiKeyMap = {
+      claude: settings.apiKey,
+      gemini: settings.geminiKey,
+      openai: settings.openaiKey
+    };
+    if (!apiKeyMap[provider]) {
+      return { error: 'NO_API_KEY', provider };
+    }
   }
 
   // Check cache — re-fetch if context changed (different page/sentence)
@@ -260,12 +280,17 @@ async function fetchWordDetail(word, context) {
   try {
     const prompt = WORD_PROMPT(word, context);
     let detail;
-    if (provider === 'gemini') {
+    if (accessMode === 'pro') {
+      detail = await callProxy(prompt, settings.accessCode);
+    } else if (provider === 'gemini') {
       const model = settings.geminiModel || 'gemini-2.5-flash';
-      detail = await callGemini(prompt, apiKey, model);
+      detail = await callGemini(prompt, settings.geminiKey, model);
+    } else if (provider === 'openai') {
+      const model = settings.openaiModel || 'gpt-4.1-mini';
+      detail = await callOpenAI(prompt, settings.openaiKey, model);
     } else {
       const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
-      detail = await callClaude(prompt, apiKey, claudeModel);
+      detail = await callClaude(prompt, settings.apiKey, claudeModel);
     }
 
     // Cache (persistent)
@@ -285,31 +310,86 @@ async function fetchPhraseDetail(phrase, pageText) {
   const settings = await chrome.storage.sync.get([
     'apiKey',
     'geminiKey',
+    'openaiKey',
     'aiProvider',
     'geminiModel',
-    'claudeModel'
+    'claudeModel',
+    'openaiModel',
+    'accessMode',
+    'accessCode'
   ]);
-  const provider = settings.aiProvider || 'claude';
+  const accessMode = settings.accessMode || 'pro';
+  const provider =
+    accessMode === 'pro' ? 'pro' : settings.aiProvider || 'claude';
 
-  const apiKey = provider === 'gemini' ? settings.geminiKey : settings.apiKey;
-  if (!apiKey) {
-    return { error: 'NO_API_KEY', provider };
+  // Validate credentials
+  if (accessMode === 'pro') {
+    if (!settings.accessCode) {
+      return { error: 'NO_ACCESS_CODE', provider: 'pro' };
+    }
+  } else {
+    const apiKeyMap = {
+      claude: settings.apiKey,
+      gemini: settings.geminiKey,
+      openai: settings.openaiKey
+    };
+    if (!apiKeyMap[provider]) {
+      return { error: 'NO_API_KEY', provider };
+    }
   }
 
   try {
     const prompt = PHRASE_PROMPT(phrase, pageText);
     let detail;
-    if (provider === 'gemini') {
+    if (accessMode === 'pro') {
+      detail = await callProxy(prompt, settings.accessCode);
+    } else if (provider === 'gemini') {
       const model = settings.geminiModel || 'gemini-2.5-flash';
-      detail = await callGemini(prompt, apiKey, model);
+      detail = await callGemini(prompt, settings.geminiKey, model);
+    } else if (provider === 'openai') {
+      const model = settings.openaiModel || 'gpt-4.1-mini';
+      detail = await callOpenAI(prompt, settings.openaiKey, model);
     } else {
       const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
-      detail = await callClaude(prompt, apiKey, claudeModel);
+      detail = await callClaude(prompt, settings.apiKey, claudeModel);
     }
     return { detail, provider };
   } catch (err) {
     return { error: err.message, provider };
   }
+}
+
+// --- Proxy (Pro mode) ---
+
+async function callProxy(prompt, accessCode) {
+  const response = await fetch(PROXY_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-code': accessCode
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const code = data.error || `HTTP ${response.status}`;
+    if (code === 'NO_ACCESS_CODE' || code === 'INVALID_ACCESS_CODE') {
+      throw new Error(code);
+    }
+    if (code === 'RATE_LIMITED') {
+      throw new Error('RATE_LIMITED');
+    }
+    throw new Error(`Proxy error: ${code}`);
+  }
+
+  const data = await response.json();
+  const raw = data.content[0].text;
+  return parseJSON(raw);
 }
 
 // --- Claude API ---
@@ -385,6 +465,41 @@ async function callGemini(prompt, apiKey, model) {
 
   const data = await response.json();
   const raw = data.candidates[0].content.parts[0].text;
+  return parseJSON(raw);
+}
+
+// --- OpenAI API ---
+
+async function callOpenAI(prompt, apiKey, model) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      temperature: 0.3,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error(
+        'OpenAI API 할당량 초과 — API 사용량 및 billing을 확인하세요.'
+      );
+    }
+    if (response.status === 401) {
+      throw new Error('OpenAI API 키가 유효하지 않습니다.');
+    }
+    const err = await response.text();
+    throw new Error(`OpenAI ${response.status}: ${err}`);
+  }
+
+  const data = await response.json();
+  const raw = data.choices[0].message.content;
   return parseJSON(raw);
 }
 

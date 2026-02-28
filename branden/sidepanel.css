@@ -49,6 +49,16 @@ body {
   color: #1d4ed8;
 }
 
+.ai-badge-openai {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.ai-badge-pro {
+  background: #ede9fe;
+  color: #7c3aed;
+}
+
 #bmc-link {
   display: inline-flex;
   align-items: center;

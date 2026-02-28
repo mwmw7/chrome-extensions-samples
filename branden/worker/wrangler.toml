@@ -1,0 +1,7 @@
+name = "eng-ko-translator-proxy"
+main = "index.js"
+compatibility_date = "2024-12-01"
+
+# Secrets (set via CLI, NOT here):
+#   wrangler secret put CLAUDE_API_KEY
+#   wrangler secret put ACCESS_CODES
