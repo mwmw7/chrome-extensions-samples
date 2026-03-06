@@ -1,7 +1,7 @@
 {
   "name": "English to Korean Translator",
   "description": "Extracts English words from any webpage and translates them to Korean. Click any word for detailed analysis via Claude or Gemini.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "manifest_version": 3,
   "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs"],
   "host_permissions": [
