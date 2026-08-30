@@ -1,10 +1,99 @@
 /* global COMMON_WORDS, BASIC_WORDS, TOEFL_WORDS */
 importScripts('common-words.js', 'toefl-words.js');
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((err) => console.error(err));
 
-// TODO: Replace with your actual Worker URL after `npx wrangler deploy`
-const PROXY_URL = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
+const PROXY_BASE = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
+
+// Anonymous id used only to meter the signed-out free tier.
+async function getDeviceId() {
+  const { deviceId } = await chrome.storage.local.get('deviceId');
+  if (deviceId) return deviceId;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ deviceId: id });
+  return id;
+}
+
+// --- Google sign-in ---------------------------------------
+
+/**
+ * `interactive: false` returns a token only if one is already cached, so the
+ * common path never shows UI. Pass true only from an explicit user gesture —
+ * Chrome rejects an interactive prompt raised out of nowhere.
+ */
+async function getGoogleToken(interactive = false) {
+  try {
+    const res = await chrome.identity.getAuthToken({ interactive });
+    const token = (typeof res === 'string' ? res : res?.token) || null;
+    if (!token && interactive) {
+      console.error('[auth] getAuthToken returned no token', res);
+    }
+    return token;
+  } catch (err) {
+    // Only noise when nobody asked for UI — a silent probe failing just means
+    // "not signed in yet". An interactive failure is a real problem.
+    if (interactive) console.error('[auth] getAuthToken failed:', err);
+    return null;
+  }
+}
+
+/** Surfaces the underlying Chrome error instead of a generic failure. */
+async function signIn() {
+  let res;
+  try {
+    res = await chrome.identity.getAuthToken({ interactive: true });
+  } catch (err) {
+    console.error('[auth] sign-in failed:', err);
+    return { error: 'SIGN_IN_FAILED', detail: String(err?.message || err) };
+  }
+
+  const token = (typeof res === 'string' ? res : res?.token) || null;
+  if (!token) {
+    const detail = chrome.runtime.lastError?.message || 'no token returned';
+    console.error('[auth] sign-in failed:', detail);
+    return { error: 'SIGN_IN_FAILED', detail };
+  }
+
+  const me = await proxyPost('/v1/me', {}, token);
+  if (!me.signedIn) {
+    console.error('[auth] worker rejected the token', me);
+    return { error: 'TOKEN_REJECTED', detail: JSON.stringify(me) };
+  }
+  return me;
+}
+
+/** Prints everything needed to diagnose an OAuth mismatch. */
+function authDiagnostics() {
+  const m = chrome.runtime.getManifest();
+  const info = {
+    extensionId: chrome.runtime.id,
+    manifestClientId: m.oauth2?.client_id || '(없음)',
+    scopes: m.oauth2?.scopes || [],
+    hasKey: !!m.key,
+    proxyBase: PROXY_BASE
+  };
+  console.log('[auth] diagnostics', info);
+  return info;
+}
+
+/**
+ * Revokes the cached token as well as clearing it. Without the revoke, the
+ * next sign-in silently reuses the same account and "sign out" appears broken
+ * to anyone switching accounts.
+ */
+async function signOut() {
+  const token = await getGoogleToken(false);
+  if (token) {
+    await chrome.identity.removeCachedAuthToken({ token }).catch(() => {});
+    await fetch(
+      `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`,
+      { method: 'POST' }
+    ).catch(() => {});
+  }
+  return { ok: true };
+}
 
 const memoryCache = new Map();
 const BATCH_SIZE = 50;
@@ -79,6 +168,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'FETCH_PHRASE_DETAIL') {
     fetchPhraseDetail(message.phrase, message.pageText).then(sendResponse);
+    return true;
+  }
+  if (message.type === 'GET_ME') {
+    getMe().then(sendResponse);
+    return true;
+  }
+  if (message.type === 'SIGN_IN') {
+    signIn().then(sendResponse);
+    return true;
+  }
+  if (message.type === 'AUTH_DIAGNOSTICS') {
+    sendResponse(authDiagnostics());
+    return true;
+  }
+  if (message.type === 'SIGN_OUT') {
+    signOut().then(sendResponse);
+    return true;
+  }
+  if (message.type === 'OPEN_CHECKOUT') {
+    openCheckout().then(sendResponse);
+    return true;
+  }
+  if (message.type === 'OPEN_PORTAL') {
+    openPortal().then(sendResponse);
     return true;
   }
 });
@@ -231,165 +344,214 @@ async function googleTranslateBatch(words) {
   return results;
 }
 
-// --- On-demand word detail (Claude or Gemini) ---
+// --- Shared settings load -----------------------------------
 
-async function fetchWordDetail(word, context) {
-  const settings = await chrome.storage.sync.get([
-    'apiKey',
-    'geminiKey',
-    'openaiKey',
-    'aiProvider',
-    'geminiModel',
-    'claudeModel',
-    'openaiModel',
-    'accessMode',
-    'accessCode'
-  ]);
+const SETTING_KEYS = [
+  'apiKey',
+  'geminiKey',
+  'openaiKey',
+  'aiProvider',
+  'geminiModel',
+  'claudeModel',
+  'openaiModel',
+  'accessMode'
+];
+
+/**
+ * Resolves which backend to use. Pro mode WITHOUT a license key is the free
+ * tier, not an error — a new user has to be able to try the feature before
+ * being asked to pay.
+ */
+async function resolveBackend() {
+  const settings = await chrome.storage.sync.get(SETTING_KEYS);
   const accessMode = settings.accessMode || 'pro';
-  const provider =
-    accessMode === 'pro' ? 'pro' : settings.aiProvider || 'claude';
 
-  // Validate credentials
   if (accessMode === 'pro') {
-    if (!settings.accessCode) {
-      return { error: 'NO_ACCESS_CODE', provider: 'pro' };
-    }
-  } else {
-    const apiKeyMap = {
-      claude: settings.apiKey,
-      gemini: settings.geminiKey,
-      openai: settings.openaiKey
-    };
-    if (!apiKeyMap[provider]) {
-      return { error: 'NO_API_KEY', provider };
-    }
+    return { mode: 'pro', provider: 'pro', settings };
   }
 
-  // Check cache — re-fetch if context changed (different page/sentence)
+  const provider = settings.aiProvider || 'claude';
+  const keyMap = {
+    claude: settings.apiKey,
+    gemini: settings.geminiKey,
+    openai: settings.openaiKey
+  };
+  if (!keyMap[provider]) {
+    return { error: 'NO_API_KEY', provider };
+  }
+  return { mode: 'own', provider, settings };
+}
+
+// --- On-demand word detail ----------------------------------
+
+async function fetchWordDetail(word, context) {
+  const backend = await resolveBackend();
+  if (backend.error) return backend;
+  const { mode, provider, settings } = backend;
+
+  // Cache — re-fetch if the context changed (different page/sentence)
   const stored = await chrome.storage.local.get('wordDetails');
   const existing = stored.wordDetails || {};
   if (existing[word]) {
     const cached = existing[word];
     const cachedCtx = cached.contextSentence || '';
-    const newCtx = context || '';
-    if (!newCtx || cachedCtx === newCtx) {
-      return { detail: cached, provider };
+    if (!context || cachedCtx === context) {
+      return { detail: cached, provider, cached: true };
     }
   }
 
   try {
-    const prompt = WORD_PROMPT(word, context);
     let detail;
-    if (accessMode === 'pro') {
-      detail = await callProxy(prompt, settings.accessCode);
-    } else if (provider === 'gemini') {
-      const model = settings.geminiModel || 'gemini-2.5-flash';
-      detail = await callGemini(prompt, settings.geminiKey, model);
-    } else if (provider === 'openai') {
-      const model = settings.openaiModel || 'gpt-4.1-mini';
-      detail = await callOpenAI(prompt, settings.openaiKey, model);
+    let quota = null;
+
+    if (mode === 'pro') {
+      const res = await callProxy({ type: 'word', word, context });
+      detail = res.detail;
+      quota = {
+        tier: res.tier,
+        signedIn: res.signedIn,
+        remaining: res.remaining,
+        resetAt: res.resetAt
+      };
     } else {
-      const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
-      detail = await callClaude(prompt, settings.apiKey, claudeModel);
+      detail = await callOwnKey(WORD_PROMPT(word, context), provider, settings);
     }
 
-    // Cache (persistent)
     const s = await chrome.storage.local.get('wordDetails');
     const merged = { ...(s.wordDetails || {}), [word]: detail };
     await chrome.storage.local.set({ wordDetails: merged });
 
-    return { detail, provider };
+    return { detail, provider, quota };
   } catch (err) {
     return { error: err.message, provider };
   }
 }
 
-// --- On-demand phrase detail ---
+// --- On-demand phrase detail --------------------------------
 
 async function fetchPhraseDetail(phrase, pageText) {
-  const settings = await chrome.storage.sync.get([
-    'apiKey',
-    'geminiKey',
-    'openaiKey',
-    'aiProvider',
-    'geminiModel',
-    'claudeModel',
-    'openaiModel',
-    'accessMode',
-    'accessCode'
-  ]);
-  const accessMode = settings.accessMode || 'pro';
-  const provider =
-    accessMode === 'pro' ? 'pro' : settings.aiProvider || 'claude';
-
-  // Validate credentials
-  if (accessMode === 'pro') {
-    if (!settings.accessCode) {
-      return { error: 'NO_ACCESS_CODE', provider: 'pro' };
-    }
-  } else {
-    const apiKeyMap = {
-      claude: settings.apiKey,
-      gemini: settings.geminiKey,
-      openai: settings.openaiKey
-    };
-    if (!apiKeyMap[provider]) {
-      return { error: 'NO_API_KEY', provider };
-    }
-  }
+  const backend = await resolveBackend();
+  if (backend.error) return backend;
+  const { mode, provider, settings } = backend;
 
   try {
-    const prompt = PHRASE_PROMPT(phrase, pageText);
     let detail;
-    if (accessMode === 'pro') {
-      detail = await callProxy(prompt, settings.accessCode);
-    } else if (provider === 'gemini') {
-      const model = settings.geminiModel || 'gemini-2.5-flash';
-      detail = await callGemini(prompt, settings.geminiKey, model);
-    } else if (provider === 'openai') {
-      const model = settings.openaiModel || 'gpt-4.1-mini';
-      detail = await callOpenAI(prompt, settings.openaiKey, model);
+    let quota = null;
+
+    if (mode === 'pro') {
+      const res = await callProxy({ type: 'phrase', phrase, pageText });
+      detail = res.detail;
+      quota = {
+        tier: res.tier,
+        signedIn: res.signedIn,
+        remaining: res.remaining,
+        resetAt: res.resetAt
+      };
     } else {
-      const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
-      detail = await callClaude(prompt, settings.apiKey, claudeModel);
+      detail = await callOwnKey(
+        PHRASE_PROMPT(phrase, pageText),
+        provider,
+        settings
+      );
     }
-    return { detail, provider };
+
+    return { detail, provider, quota };
   } catch (err) {
     return { error: err.message, provider };
   }
 }
 
-// --- Proxy (Pro mode) ---
+// --- Proxy (Pro + free tier) --------------------------------
 
-async function callProxy(prompt, accessCode) {
-  const response = await fetch(PROXY_URL, {
+/**
+ * The proxy takes structured intent, not a prompt string: prompts now live
+ * server-side so a leaked license cannot be used as a general Claude proxy,
+ * and prompt fixes ship without a Web Store review.
+ */
+async function callProxy(payload) {
+  const deviceId = await getDeviceId();
+  const token = await getGoogleToken(false);
+
+  const response = await fetch(`${PROXY_BASE}/v1/complete`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-access-code': accessCode
+      'x-device-id': deviceId,
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }]
-    })
+    body: JSON.stringify(payload)
   });
 
+  const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const code = data.error || `HTTP ${response.status}`;
-    if (code === 'NO_ACCESS_CODE' || code === 'INVALID_ACCESS_CODE') {
-      throw new Error(code);
-    }
-    if (code === 'RATE_LIMITED') {
-      throw new Error('RATE_LIMITED');
-    }
-    throw new Error(`Proxy error: ${code}`);
+    const err = new Error(data.error || `HTTP ${response.status}`);
+    err.code = data.error;
+    err.resetAt = data.resetAt;
+    err.limit = data.limit;
+    throw err;
   }
 
-  const data = await response.json();
-  const raw = data.content[0].text;
-  return parseJSON(raw);
+  return data;
+}
+
+async function proxyPost(path, body, tokenOverride) {
+  const token = tokenOverride ?? (await getGoogleToken(false));
+  const response = await fetch(`${PROXY_BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify(body)
+  });
+  return response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+}
+
+async function getMe() {
+  return proxyPost('/v1/me', { deviceId: await getDeviceId() });
+}
+
+async function openCheckout() {
+  // Checkout needs an account to attach the subscription to, so escalate to an
+  // interactive sign-in rather than failing with SIGN_IN_REQUIRED.
+  let token = await getGoogleToken(false);
+  if (!token) token = await getGoogleToken(true);
+  if (!token) return { error: 'SIGN_IN_FAILED' };
+
+  const result = await proxyPost('/v1/checkout', {}, token);
+  if (result.url) chrome.tabs.create({ url: result.url });
+  return result;
+}
+
+async function openPortal() {
+  const result = await proxyPost('/v1/portal', {});
+  if (result.url) chrome.tabs.create({ url: result.url });
+  return result;
+}
+
+// --- Own-key providers --------------------------------------
+
+async function callOwnKey(prompt, provider, settings) {
+  if (provider === 'gemini') {
+    return callGemini(
+      prompt,
+      settings.geminiKey,
+      settings.geminiModel || 'gemini-2.5-flash'
+    );
+  }
+  if (provider === 'openai') {
+    return callOpenAI(
+      prompt,
+      settings.openaiKey,
+      settings.openaiModel || 'gpt-4.1-mini'
+    );
+  }
+  return callClaude(
+    prompt,
+    settings.apiKey,
+    settings.claudeModel || 'claude-haiku-4-5-20251001'
+  );
 }
 
 // --- Claude API ---

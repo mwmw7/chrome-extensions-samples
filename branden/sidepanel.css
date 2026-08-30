@@ -59,29 +59,6 @@ body {
   color: #7c3aed;
 }
 
-#bmc-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  background: #FFDD00;
-  border-radius: 5px;
-  text-decoration: none;
-  font-size: 11px;
-  font-weight: 700;
-  color: #000;
-  line-height: 1;
-  transition: opacity 0.15s;
-}
-
-#bmc-link:hover {
-  opacity: 0.85;
-}
-
-#bmc-link span {
-  font-size: 11px;
-}
-
 #settings-link {
   font-size: 18px;
   color: #888;
@@ -745,4 +722,39 @@ body {
 
 #review-next:hover {
   background: #15803d;
+}
+
+
+#quota-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ede9fe;
+  color: #6d28d9;
+  cursor: default;
+}
+
+#quota-badge.quota-low {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.upgrade-inline,
+.signin-inline {
+  display: block;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.upgrade-inline:hover,
+.signin-inline:hover {
+  background: #6d28d9;
 }

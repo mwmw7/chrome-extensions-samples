@@ -6,3 +6,7 @@ _debug
 _metadata
 dist
 **/*.swp 
+
+# branden / snaplingo
+branden/worker/.wrangler/
+branden/client_secret_*.json

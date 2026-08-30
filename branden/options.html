@@ -124,6 +124,86 @@
         display: none !important;
       }
 
+      .btn-hint {
+        font-size: 11px;
+        color: #999;
+        text-align: center;
+        margin: -4px 0 12px;
+      }
+
+      #account-links {
+        margin-top: 14px;
+        text-align: center;
+        font-size: 12px;
+      }
+
+      #account-links a {
+        color: #888;
+        text-decoration: none;
+      }
+
+      #account-links a:hover {
+        color: #555;
+        text-decoration: underline;
+      }
+
+      #account-links .sep {
+        color: #ccc;
+        margin: 0 6px;
+      }
+
+      #plan-box {
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+        background: #fafafa;
+      }
+
+      #plan-tier {
+        font-size: 14px;
+        font-weight: 700;
+        color: #7c3aed;
+      }
+
+      .primary-btn,
+      .secondary-btn {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-bottom: 8px;
+      }
+
+      .primary-btn {
+        background: #7c3aed;
+        color: #fff;
+        border: none;
+      }
+
+      .primary-btn:hover {
+        background: #6d28d9;
+      }
+
+      .secondary-btn {
+        background: #fff;
+        color: #555;
+        border: 1px solid #ddd;
+      }
+
+      .key-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .key-row input {
+        flex: 1;
+      }
+
+
+
       .provider-group {
         display: flex;
         gap: 8px;
@@ -214,19 +294,29 @@
 
       <!-- Pro mode section -->
       <div id="pro-section">
-        <label for="access-code-input">Access Code</label>
-        <div class="hint">
-          Get your access code from
-          <a href="https://buymeacoffee.com/mwmw77" target="_blank"
-            >Buy Me a Coffee</a
-          >
-          membership.
+        <div id="plan-box">
+          <div id="plan-tier">Free</div>
+          <div id="plan-account" class="hint">로그인되지 않음</div>
+          <div id="plan-usage" class="hint">사용량 확인 중...</div>
         </div>
-        <input
-          type="text"
-          id="access-code-input"
-          placeholder="Enter your access code"
-        />
+
+        <!-- Exactly one primary action is ever visible. Signing in is a step
+             inside subscribing, not a competing button. -->
+        <button id="upgrade-btn" class="primary-btn">Pro 구독하기</button>
+        <div id="upgrade-hint" class="btn-hint">
+          Google 계정으로 로그인한 뒤 결제가 진행됩니다
+        </div>
+
+        <button id="portal-btn" class="secondary-btn hidden">
+          구독 관리 &middot; 결제수단 변경
+        </button>
+
+        <div id="account-links">
+          <a href="#" id="signin-link">Google 로그인</a>
+          <a href="#" id="signout-link" class="hidden">로그아웃</a>
+          <span class="sep">&middot;</span>
+          <a href="#" id="refresh-link">새로고침</a>
+        </div>
       </div>
 
       <!-- Own Key sections (hidden when Pro) -->
@@ -305,37 +395,6 @@
       <button id="save-btn">Save</button>
       <div id="status"></div>
 
-      <!-- Support -->
-      <h2>Support the Developer</h2>
-      <div class="hint">
-        If this extension helps you learn English, consider supporting its
-        development!
-      </div>
-      <a
-        href="https://buymeacoffee.com/mwmw77"
-        target="_blank"
-        style="
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 20px;
-          background: #ffdd00;
-          color: #000;
-          border-radius: 8px;
-          text-decoration: none;
-          font-size: 14px;
-          font-weight: 700;
-          margin-top: 4px;
-        "
-      >
-        <img
-          src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
-          alt=""
-          width="20"
-          height="20"
-        />
-        Buy me a coffee
-      </a>
     </div>
 
     <script src="options.js"></script>

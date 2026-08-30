@@ -1,9 +1,24 @@
 {
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtLtYbVXe4VrFxRVKkv9qPkZo3y8jn4gMOo9oTKPJfuS/jGb32Ifz21dYHPGN26IJwnzeBig7d5QOq4C79HBm7fmdWfcgUnC//OK3yEZMyTPOff/GuQjCMM91dvY+i/n5US2CgnOSY/BH+OPlpPISGg0F7mS8vvp5XsxzTbpU3XuLwyr+e4rGK5XyEmdWcCnMz2N2E9nCh98oFRWoQdzQkSwwrKR5/b1J/TgMyz98eRzomL8nJDOfuc8IRp4yDzRqJmKDIWl2VVWpS32snUnWJzLg2v5+qRT46Vf6VgX/mLdx1VKbf7iPgkVdNO/BcfnKsGywE2E4bMrYosvjW8MRbwIDAQAB",
   "name": "English to Korean Translator",
   "description": "Extracts English words from any webpage and translates them to Korean. Click any word for detailed analysis via Claude or Gemini.",
   "version": "1.0.3",
   "manifest_version": 3,
-  "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs"],
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "identity"
+  ],
+  "oauth2": {
+    "client_id": "80444110330-c8dotafh7rmopq576bllubjqg69inffj.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "email"
+    ]
+  },
   "host_permissions": [
     "https://translate.googleapis.com/*",
     "https://api.anthropic.com/*",
@@ -32,8 +47,12 @@
   },
   "content_scripts": [
     {
-      "js": ["scripts/content.js"],
-      "matches": ["<all_urls>"]
+      "js": [
+        "scripts/content.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

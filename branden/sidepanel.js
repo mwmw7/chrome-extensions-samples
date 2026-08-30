@@ -9,6 +9,7 @@ const listView = document.getElementById('list-view');
 const reviewView = document.getElementById('review-view');
 const phraseView = document.getElementById('phrase-view');
 const aiBadge = document.getElementById('ai-badge');
+const quotaEl = document.getElementById('quota-badge');
 const exportBtn = document.getElementById('export-btn');
 
 let allWords = [];
@@ -32,6 +33,7 @@ let reviewIndex = 0;
 
 // --- On panel open: extract words from current tab immediately ---
 chrome.runtime.sendMessage({ type: 'PANEL_OPENED' });
+updateQuotaBadge();
 
 // Retry if no words arrived (handles late panel open after page load)
 setTimeout(() => {
@@ -191,7 +193,71 @@ function updateSavedCount() {
   savedCountEl.textContent = Object.keys(savedWords).length;
 }
 
+
+// =====================
+//  ENTITLEMENT ERRORS
+// =====================
+
+// Single source of truth for paywall/quota copy, so the word view and the
+// phrase view can never drift apart.
+function entitlementErrorHtml(resp) {
+  const providerNames = {
+    claude: 'Claude',
+    gemini: 'Gemini',
+    openai: 'OpenAI'
+  };
+
+  switch (resp.error) {
+    case 'FREE_LIMIT_REACHED':
+      // One action either way. Subscribing handles sign-in on its own, so
+      // offering "sign in" separately here would just add a step.
+      return `<div class="detail-error">오늘의 무료 분석 ${resp.limit ?? ''}회를 모두 사용했습니다.
+        <button class="upgrade-inline">Pro 구독하기</button></div>`;
+    case 'QUOTA_EXCEEDED':
+      return `<div class="detail-error">이번 결제 주기의 사용량을 모두 소진했습니다.
+        ${resp.resetAt ? escapeHtml(new Date(resp.resetAt).toLocaleDateString('ko-KR')) + ' 에 초기화됩니다.' : ''}</div>`;
+    case 'SIGN_IN_REQUIRED':
+      return `<div class="detail-error">로그인이 필요합니다.
+        <button class="signin-inline">Google 로그인</button></div>`;
+    case 'NO_SUBSCRIPTION':
+      return '<div class="detail-error">활성 구독이 없습니다. Settings에서 확인하세요.</div>';
+    case 'NO_API_KEY': {
+      const name = providerNames[resp.provider] || resp.provider;
+      return `<div class="detail-error">Settings에서 ${escapeHtml(name)} API 키를 입력하세요.</div>`;
+    }
+    case 'UPSTREAM_ERROR':
+    case 'EMPTY_RESPONSE':
+      return '<div class="detail-error">일시적인 오류입니다. 잠시 후 다시 시도하세요.</div>';
+    default:
+      return `<div class="detail-error">Error: ${escapeHtml(resp.error)}</div>`;
+  }
+}
+
+// Delegated: the button is rendered inside dynamically-built cards.
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('upgrade-inline')) {
+    chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, updateQuotaBadge);
+  }
+  if (e.target.classList.contains('signin-inline')) {
+    chrome.runtime.sendMessage({ type: 'SIGN_IN' }, updateQuotaBadge);
+  }
+});
+
+function updateQuotaBadge() {
+  chrome.runtime.sendMessage({ type: 'GET_ME' }, (res) => {
+    if (!res || res.error || typeof res.remaining !== 'number') return;
+    quotaEl.textContent =
+      res.tier === 'pro' ? `${res.remaining}` : `무료 ${res.remaining}`;
+    quotaEl.title =
+      res.tier === 'pro'
+        ? `이번 결제 주기 ${res.remaining}/${res.limit}회 남음`
+        : `오늘 ${res.remaining}/${res.limit}회 남음`;
+    quotaEl.classList.toggle('quota-low', res.remaining <= 2);
+  });
+}
+
 function updateAiBadge() {
+  quotaEl.classList.toggle('hidden', accessMode !== 'pro');
   if (accessMode === 'pro') {
     aiBadge.textContent = 'Pro';
     aiBadge.className = 'ai-badge-pro';
@@ -345,45 +411,12 @@ function render() {
         chrome.runtime.sendMessage(
           { type: 'FETCH_WORD_DETAIL', word, context: ctx },
           (resp) => {
-            if (resp && resp.error === 'NO_ACCESS_CODE') {
-              const el = document.querySelector('.word-detail:not(.hidden)');
-              if (el)
-                el.innerHTML =
-                  '<div class="detail-error">Settings에서 액세스 코드를 입력하세요.</div>';
-              return;
-            }
-            if (resp && resp.error === 'INVALID_ACCESS_CODE') {
-              const el = document.querySelector('.word-detail:not(.hidden)');
-              if (el)
-                el.innerHTML =
-                  '<div class="detail-error">유효하지 않은 액세스 코드입니다. Settings에서 확인하세요.</div>';
-              return;
-            }
-            if (resp && resp.error === 'RATE_LIMITED') {
-              const el = document.querySelector('.word-detail:not(.hidden)');
-              if (el)
-                el.innerHTML =
-                  '<div class="detail-error">요청 한도 초과 — 잠시 후 다시 시도하세요. (시간당 30회)</div>';
-              return;
-            }
-            if (resp && resp.error === 'NO_API_KEY') {
-              const providerNames = {
-                claude: 'Claude',
-                gemini: 'Gemini',
-                openai: 'OpenAI'
-              };
-              const name = providerNames[resp.provider] || resp.provider;
-              const el = document.querySelector('.word-detail:not(.hidden)');
-              if (el)
-                el.innerHTML = `<div class="detail-error">Set your ${name} API key in Settings to see details.</div>`;
-              return;
-            }
             if (resp && resp.error) {
               const el = document.querySelector('.word-detail:not(.hidden)');
-              if (el)
-                el.innerHTML = `<div class="detail-error">Error: ${escapeHtml(resp.error)}</div>`;
+              if (el) el.innerHTML = entitlementErrorHtml(resp);
               return;
             }
+            if (resp && resp.quota) updateQuotaBadge();
             if (resp && resp.detail) {
               wordDetails[word] = resp.detail;
               if (openWord === word) render();
@@ -643,37 +676,12 @@ function submitPhrase() {
       phraseAskBtn.disabled = false;
       phraseAskBtn.textContent = 'Ask AI';
 
-      if (resp && resp.error === 'NO_ACCESS_CODE') {
-        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
-          <div class="detail-error">Settings에서 액세스 코드를 입력하세요.</div>`;
-        return;
-      }
-      if (resp && resp.error === 'INVALID_ACCESS_CODE') {
-        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
-          <div class="detail-error">유효하지 않은 액세스 코드입니다.</div>`;
-        return;
-      }
-      if (resp && resp.error === 'RATE_LIMITED') {
-        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
-          <div class="detail-error">요청 한도 초과 — 잠시 후 다시 시도하세요. (시간당 30회)</div>`;
-        return;
-      }
-      if (resp && resp.error === 'NO_API_KEY') {
-        const providerNames = {
-          claude: 'Claude',
-          gemini: 'Gemini',
-          openai: 'OpenAI'
-        };
-        const name = providerNames[resp.provider] || resp.provider;
-        card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
-          <div class="detail-error">Set your ${name} API key in Settings.</div>`;
-        return;
-      }
       if (resp && resp.error) {
         card.innerHTML = `<div class="phrase-card-query">"${escapeHtml(phrase)}"</div>
-          <div class="detail-error">Error: ${escapeHtml(resp.error)}</div>`;
+          ${entitlementErrorHtml(resp)}`;
         return;
       }
+      if (resp && resp.quota) updateQuotaBadge();
       if (resp && resp.detail) {
         renderPhraseCard(card, phrase, resp.detail);
       }
