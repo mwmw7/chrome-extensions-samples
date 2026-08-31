@@ -223,7 +223,9 @@ upgradeBtn.addEventListener('click', () => {
       return;
     }
     const messages = {
-      ALREADY_PAID: '이미 구매하셨습니다. 새로고침을 눌러 상태를 갱신하세요.'
+      ALREADY_PAID: '이미 구매하셨습니다. 새로고침을 눌러 상태를 갱신하세요.',
+      SIGN_IN_REQUIRED:
+        '로그인이 만료되었습니다. Google 로그인 후 다시 시도하세요.'
     };
     showStatus(
       res && res.error === 'SIGN_IN_FAILED'
