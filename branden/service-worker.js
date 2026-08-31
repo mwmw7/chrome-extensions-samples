@@ -19,34 +19,34 @@ async function getDeviceId() {
 // --- Google sign-in ---------------------------------------
 
 /**
- * `interactive: false` returns a token only if one is already cached, so the
- * common path never shows UI. Pass true only from an explicit user gesture —
- * Chrome rejects an interactive prompt raised out of nowhere.
+ * Silent probe — returns a token only if one is already cached, so the common
+ * path never shows UI. Failing here just means "not signed in yet", which is
+ * why it stays quiet. Interactive sign-in lives in requestGoogleToken(), which
+ * must be driven by a user gesture: Chrome rejects a prompt raised out of
+ * nowhere.
  */
-async function getGoogleToken(interactive = false) {
+async function getCachedGoogleToken() {
   try {
-    const res = await chrome.identity.getAuthToken({ interactive });
-    const token = (typeof res === 'string' ? res : res?.token) || null;
-    if (!token && interactive) {
-      console.error('[auth] getAuthToken returned no token', res);
-    }
-    return token;
-  } catch (err) {
-    // Only noise when nobody asked for UI — a silent probe failing just means
-    // "not signed in yet". An interactive failure is a real problem.
-    if (interactive) console.error('[auth] getAuthToken failed:', err);
+    const res = await chrome.identity.getAuthToken({ interactive: false });
+    return (typeof res === 'string' ? res : res?.token) || null;
+  } catch {
     return null;
   }
 }
 
-/** Surfaces the underlying Chrome error instead of a generic failure. */
-async function signIn() {
+/**
+ * Interactive sign-in that keeps the underlying Chrome error. The reason
+ * matters: a cancelled prompt and a browser that cannot sign in at all both
+ * arrive here, and only the first is worth retrying.
+ */
+async function requestGoogleToken() {
   let res;
   try {
     res = await chrome.identity.getAuthToken({ interactive: true });
   } catch (err) {
-    console.error('[auth] sign-in failed:', err);
-    return { error: 'SIGN_IN_FAILED', detail: String(err?.message || err) };
+    const detail = String(err?.message || err);
+    console.error('[auth] sign-in failed:', detail);
+    return { error: 'SIGN_IN_FAILED', detail };
   }
 
   const token = (typeof res === 'string' ? res : res?.token) || null;
@@ -55,6 +55,14 @@ async function signIn() {
     console.error('[auth] sign-in failed:', detail);
     return { error: 'SIGN_IN_FAILED', detail };
   }
+  return { token };
+}
+
+/** Surfaces the underlying Chrome error instead of a generic failure. */
+async function signIn() {
+  const attempt = await requestGoogleToken();
+  if (attempt.error) return attempt;
+  const token = attempt.token;
 
   const me = await proxyPost('/v1/me', {}, token);
   if (!me.signedIn) {
@@ -84,7 +92,7 @@ function authDiagnostics() {
  * to anyone switching accounts.
  */
 async function signOut() {
-  const token = await getGoogleToken(false);
+  const token = await getCachedGoogleToken();
   if (token) {
     await chrome.identity.removeCachedAuthToken({ token }).catch(() => {});
     await fetch(
@@ -470,7 +478,7 @@ async function fetchPhraseDetail(phrase, pageText) {
  */
 async function callProxy(payload) {
   const deviceId = await getDeviceId();
-  const token = await getGoogleToken(false);
+  const token = await getCachedGoogleToken();
 
   const response = await fetch(`${PROXY_BASE}/v1/complete`, {
     method: 'POST',
@@ -496,7 +504,7 @@ async function callProxy(payload) {
 }
 
 async function proxyPost(path, body, tokenOverride) {
-  const token = tokenOverride ?? (await getGoogleToken(false));
+  const token = tokenOverride ?? (await getCachedGoogleToken());
   const response = await fetch(`${PROXY_BASE}${path}`, {
     method: 'POST',
     headers: {
@@ -515,9 +523,14 @@ async function getMe() {
 async function openCheckout() {
   // Checkout needs an account to attach the subscription to, so escalate to an
   // interactive sign-in rather than failing with SIGN_IN_REQUIRED.
-  let token = await getGoogleToken(false);
-  if (!token) token = await getGoogleToken(true);
-  if (!token) return { error: 'SIGN_IN_FAILED' };
+  let token = await getCachedGoogleToken();
+  if (!token) {
+    // Carries the reason through, so the options page can tell a cancelled
+    // prompt apart from a browser that has no Google sign-in to offer.
+    const attempt = await requestGoogleToken();
+    if (attempt.error) return attempt;
+    token = attempt.token;
+  }
 
   const result = await proxyPost('/v1/checkout', {}, token);
   if (result.url) chrome.tabs.create({ url: result.url });

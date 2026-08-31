@@ -196,11 +196,36 @@ function refreshPlan() {
   chrome.runtime.sendMessage({ type: 'GET_ME' }, applyMe);
 }
 
+const NO_BROWSER_SIGNIN =
+  'Chrome 브라우저 로그인이 꺼져 있어 Google 로그인을 할 수 없습니다. ' +
+  '정품 Chrome에서 chrome://settings/syncSetup 의 "Chrome에 로그인 허용"을 켜주세요. ' +
+  'Chromium·Brave 등에서는 이 기능이 제공되지 않습니다.';
+
+/**
+ * Chrome reports a browser with no Google sign-in — plain Chromium, Brave, a
+ * profile under BrowserSignin policy — as "the user turned off browser
+ * signin". That reads like a switch the user flipped, but on those builds
+ * there is no switch, so the raw string sends people looking for a setting
+ * that does not exist. Everything else really is a cancelled prompt.
+ */
+function signInErrorMessage(res) {
+  if (/browser signin/i.test(res?.detail || '')) return NO_BROWSER_SIGNIN;
+  // Google issued a token but the Worker refused it — an OAuth client mismatch,
+  // not anything the user did. Saying "cancelled" here would send them retrying
+  // a sign-in that cannot succeed.
+  if (res?.error === 'TOKEN_REJECTED') {
+    return '로그인은 되었지만 서버가 인증을 거부했습니다. OAuth 설정을 확인하세요.';
+  }
+  // The service worker already logged the raw detail for debugging; showing it
+  // here only puts untranslated Chrome internals in front of the user.
+  return '로그인이 취소되었습니다.';
+}
+
 signinLink.addEventListener('click', (e) => {
   e.preventDefault();
   chrome.runtime.sendMessage({ type: 'SIGN_IN' }, (res) => {
     if (!res || res.error) {
-      showStatus(`로그인 실패: ${res?.detail || res?.error || '오류'}`, true);
+      showStatus(signInErrorMessage(res), true);
       return;
     }
     applyMe(res);
@@ -234,12 +259,13 @@ upgradeBtn.addEventListener('click', () => {
       return;
     }
     const messages = {
-      SIGN_IN_FAILED: '로그인이 취소되었습니다.',
       SIGN_IN_REQUIRED: '로그인이 필요합니다.',
       ALREADY_SUBSCRIBED: '이미 구독 중입니다.'
     };
     showStatus(
-      messages[res && res.error] || '결제 페이지를 열지 못했습니다.',
+      res && res.error === 'SIGN_IN_FAILED'
+        ? signInErrorMessage(res)
+        : messages[res && res.error] || '결제 페이지를 열지 못했습니다.',
       true
     );
     refreshPlan();

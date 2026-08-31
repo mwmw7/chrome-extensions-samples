@@ -117,12 +117,28 @@ function bearer(request) {
 
 function isActive(rec) {
   const now = Date.now();
+
+  // Every comparison against a missing period end is false, which would revoke
+  // access for someone Stripe still reports as paying. When the period end is
+  // unknown, fall back to the status alone. That is bounded, not open-ended:
+  // Stripe moves a failing subscription to unpaid or canceled on its own
+  // dunning schedule, and the branches below stop serving once it does.
+  const hasPeriodEnd = Number.isFinite(rec.periodEnd);
+  if (!hasPeriodEnd) {
+    console.error('subscription record has no usable period end', rec.sub);
+  }
+
   if (rec.status === 'active' || rec.status === 'trialing') {
-    return now < rec.periodEnd;
+    return hasPeriodEnd ? now < rec.periodEnd : true;
   }
   // Card failed but the subscription is not dead yet.
-  if (rec.status === 'past_due' || rec.status === 'unpaid') {
-    return now < rec.periodEnd + CONFIG.GRACE_MS;
+  if (rec.status === 'past_due') {
+    return hasPeriodEnd ? now < rec.periodEnd + CONFIG.GRACE_MS : true;
+  }
+  // Stripe has stopped trying to collect. No period end means no grace window
+  // to measure, and unlike past_due there is no longer a payment in flight.
+  if (rec.status === 'unpaid') {
+    return hasPeriodEnd && now < rec.periodEnd + CONFIG.GRACE_MS;
   }
   return false; // canceled, incomplete_expired, ...
 }
@@ -359,6 +375,23 @@ async function findSubByCustomer(env, customerId) {
   return env.LICENSES.get(`user:${sub}`, 'json');
 }
 
+/**
+ * `current_period_end` sits on the Subscription in older API versions and on
+ * its items from Basil onward. Webhook payloads are shaped by the API version
+ * selected on the endpoint — account configuration this code does not control
+ * and cannot read — so check both rather than assume either.
+ *
+ * Returns null instead of NaN when neither is present. A NaN period end fails
+ * every comparison in isActive(), which would silently drop a paying
+ * subscriber to the free tier.
+ */
+function periodEndMs(subscription) {
+  const secs =
+    subscription?.items?.data?.[0]?.current_period_end ??
+    subscription?.current_period_end;
+  return typeof secs === 'number' ? secs * 1000 : null;
+}
+
 // --- /v1/me: identity + plan + quota, never consumes quota --
 
 async function handleMe(request, env) {
@@ -389,6 +422,11 @@ async function handleMe(request, env) {
 
 function getStripe(env) {
   // The default http client uses Node APIs that don't exist on Workers.
+  //
+  // Pinned so responses stay a fixed shape as the account default moves. Note
+  // this does NOT govern webhook payloads — those follow the API version set on
+  // the endpoint in the Dashboard, so the two can and do differ. Read
+  // periodEndMs() before assuming a field sits where this version puts it.
   return new Stripe(env.STRIPE_SECRET_KEY, {
     httpClient: Stripe.createFetchHttpClient(),
     apiVersion: '2024-11-20.acacia'
@@ -439,7 +477,9 @@ async function handlePortal(request, env) {
   const stripe = getStripe(env);
   const session = await stripe.billingPortal.sessions.create({
     customer: rec.customerId,
-    return_url: env.PUBLIC_BASE_URL
+    // Not the bare base URL: the router has no "/" case, so returning there
+    // hands the user a JSON 404 as the last thing they see.
+    return_url: `${env.PUBLIC_BASE_URL}/success`
   });
   return json({ url: session.url });
 }
@@ -479,13 +519,19 @@ async function handleWebhook(request, env) {
       }
 
       const subscription = await stripe.subscriptions.retrieve(cs.subscription);
+      const periodEnd = periodEndMs(subscription);
+      if (periodEnd === null) {
+        // Record the signup regardless — dropping it would take the money and
+        // grant nothing. isActive() falls back to the status for such records.
+        console.error('no current_period_end on subscription', cs.subscription);
+      }
       await putSub(env, {
         sub: cs.client_reference_id,
         email: cs.customer_details?.email || null,
         customerId: cs.customer,
         subscriptionId: cs.subscription,
         status: subscription.status,
-        periodEnd: subscription.current_period_end * 1000,
+        periodEnd,
         cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
         createdAt: Date.now()
       });
@@ -501,7 +547,19 @@ async function handleWebhook(request, env) {
           event.type === 'customer.subscription.deleted'
             ? 'canceled'
             : subscription.status;
-        rec.periodEnd = subscription.current_period_end * 1000;
+
+        // Re-fetch rather than write a null: the retrieved object comes back
+        // in the version this Worker pins, so its shape is ours to rely on.
+        // Keep the previous period end if even that comes up empty.
+        let periodEnd = periodEndMs(subscription);
+        if (periodEnd === null) {
+          console.error('event carried no period end, refetching', subscription.id);
+          periodEnd = periodEndMs(
+            await stripe.subscriptions.retrieve(subscription.id)
+          );
+        }
+        if (periodEnd !== null) rec.periodEnd = periodEnd;
+
         rec.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
         await putSub(env, rec);
       }

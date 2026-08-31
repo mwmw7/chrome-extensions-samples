@@ -13,6 +13,12 @@ PUBLIC_BASE_URL = "https://eng-ko-translator-proxy.mwmw77.workers.dev"
 # Must be byte-identical to the client_id in the extension's manifest.json.
 GOOGLE_CLIENT_ID = "80444110330-c8dotafh7rmopq576bllubjqg69inffj.apps.googleusercontent.com"
 
+# Recurring Price for the Pro plan ($3/month), Snaplingo sandbox. Not a secret —
+# it identifies a price, it does not authorize anything — so it lives here where
+# a deploy is reproducible rather than in an unreviewable secret.
+# The live-mode Price is a different id; swap this when cutting over.
+STRIPE_PRICE_ID = "price_1UAKhVAFgSt5HQHAnqecmJSX"
+
 # License records. Create with:
 #   npx wrangler kv namespace create LICENSES
 # then paste the returned id below.
@@ -33,4 +39,3 @@ new_sqlite_classes = ["UsageCounter"]
 #   npx wrangler secret put CLAUDE_API_KEY
 #   npx wrangler secret put STRIPE_SECRET_KEY
 #   npx wrangler secret put STRIPE_WEBHOOK_SECRET
-#   npx wrangler secret put STRIPE_PRICE_ID
