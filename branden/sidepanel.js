@@ -32,6 +32,16 @@ let reviewIndex = 0;
 // --- On panel open: extract words from current tab immediately ---
 chrome.runtime.sendMessage({ type: 'PANEL_OPENED' });
 
+// One-time reconcile against the server-backed word list. SIGN_IN_REQUIRED
+// is the normal state for signed-out users, so stay silent there.
+chrome.runtime.sendMessage({ type: 'SYNC_WORDS' }, (res) => {
+  if (res?.error === 'MIGRATION_FAILED') {
+    showToast(
+      '기존 단어 이관에 실패했습니다. 로그인 상태를 확인하고 새로고침하세요.'
+    );
+  }
+});
+
 // Retry if no words arrived (handles late panel open after page load)
 setTimeout(() => {
   if (allWords.length === 0) {
@@ -92,10 +102,8 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
 });
 
 // --- Load data ---
-chrome.storage.sync.get(['savedWords', 'aiProvider'], (data) => {
-  savedWords = data.savedWords || {};
+chrome.storage.sync.get(['aiProvider'], (data) => {
   aiProvider = data.aiProvider || 'gemini';
-  updateSavedCount();
   updateAiBadge();
 });
 
@@ -123,12 +131,18 @@ chrome.storage.session.get(
   }
 );
 
-// Load persistent cache from local
-chrome.storage.local.get(['translations', 'wordDetails'], (data) => {
-  if (data.translations) translations = data.translations;
-  if (data.wordDetails) wordDetails = data.wordDetails;
-  render();
-});
+// Load persistent cache from local (savedWords mirror lives here too — the
+// server owns the source of truth, this is just what the SW last synced).
+chrome.storage.local.get(
+  ['translations', 'wordDetails', 'savedWords'],
+  (data) => {
+    if (data.translations) translations = data.translations;
+    if (data.wordDetails) wordDetails = data.wordDetails;
+    if (data.savedWords) savedWords = data.savedWords;
+    updateSavedCount();
+    render();
+  }
+);
 
 // --- Real-time updates ---
 chrome.storage.session.onChanged.addListener((changes) => {
@@ -148,15 +162,23 @@ chrome.storage.session.onChanged.addListener((changes) => {
 chrome.storage.local.onChanged.addListener((changes) => {
   if (changes.translations) translations = changes.translations.newValue || {};
   if (changes.wordDetails) wordDetails = changes.wordDetails.newValue || {};
+  if (changes.savedWords) {
+    savedWords = changes.savedWords.newValue || {};
+    updateSavedCount();
+  }
+  if (changes.limitNotice) {
+    const notice = changes.limitNotice.newValue;
+    const n = notice?.rejected?.length || 0;
+    if (n > 0) {
+      showToast(
+        `무료 한도(200개)로 ${n}개 단어가 저장되지 않았습니다. $3 결제로 제한을 해제하세요.`
+      );
+    }
+  }
   if (currentTab !== 'review') render();
 });
 
 chrome.storage.sync.onChanged.addListener((changes) => {
-  if (changes.savedWords) {
-    savedWords = changes.savedWords.newValue || {};
-    updateSavedCount();
-    if (currentTab !== 'review') render();
-  }
   if (changes.aiProvider) {
     aiProvider = changes.aiProvider.newValue || 'gemini';
     updateAiBadge();
@@ -170,21 +192,54 @@ searchInput.addEventListener('input', () => {
 });
 
 // --- Save / Unsave ---
+// Saving is a request, not a local write: the server owns the count and
+// enforces the free-tier limit. The mirror updates via storage.onChanged
+// once the SW's write lands, which is what actually re-renders the list.
 function toggleSave(word) {
-  if (savedWords[word]) {
-    delete savedWords[word];
-  } else {
-    savedWords[word] = Date.now();
-  }
-  chrome.storage.sync.set({ savedWords });
-  updateSavedCount();
-  render();
+  const saving = !savedWords[word];
+  const type = saving ? 'SAVE_WORD' : 'DELETE_WORD';
+  const payload = saving
+    ? {
+        type,
+        word,
+        ko: translations[word] || null,
+        detail: wordDetails[word] || null
+      }
+    : { type, word };
+  chrome.runtime.sendMessage(payload, (res) => {
+    if (res?.error === 'SIGN_IN_REQUIRED') {
+      showToast(
+        '단어 저장은 Google 로그인이 필요합니다. 설정에서 로그인하세요.'
+      );
+      return;
+    }
+    if (res?.error === 'LIMIT_REACHED') {
+      showToast(
+        `무료는 ${res.limit}개까지 저장됩니다. $3 결제로 제한 없이 저장하세요.`
+      );
+      return;
+    }
+    // mirror 변경이 storage.onChanged로 되돌아와 렌더됨
+  });
 }
 
 function updateSavedCount() {
-  savedCountEl.textContent = Object.keys(savedWords).length;
+  const n = Object.keys(savedWords).length;
+  chrome.runtime.sendMessage({ type: 'GET_ME' }, (me) => {
+    savedCountEl.textContent = me?.paid ? `${n}` : `${n}/${me?.limit ?? 200}`;
+  });
 }
 
+// Reuses the existing #status element used for extraction progress; last
+// writer wins, which is fine since neither message needs to persist.
+let toastTimer = null;
+function showToast(msg) {
+  statusEl.textContent = msg;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    statusEl.textContent = '';
+  }, 4000);
+}
 
 // =====================
 //  ENTITLEMENT ERRORS
@@ -759,7 +814,21 @@ function shuffle(arr) {
 // =====================
 //  EXCEL EXPORT
 // =====================
-exportBtn.addEventListener('click', exportToExcel);
+exportBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'GET_ME' }, (me) => {
+    if (!me?.paid) {
+      if (
+        confirm(
+          'xlsx 내보내기는 Pro 기능입니다. $3 한 번 결제로 영구 해제할까요?\n(AI 사용료는 본인 API 키로 별도 청구됩니다)'
+        )
+      ) {
+        chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, () => {});
+      }
+      return;
+    }
+    exportToExcel();
+  });
+});
 
 function exportToExcel() {
   const words = Object.keys(savedWords).sort();
