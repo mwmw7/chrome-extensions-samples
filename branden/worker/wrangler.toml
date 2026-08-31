@@ -13,11 +13,11 @@ PUBLIC_BASE_URL = "https://eng-ko-translator-proxy.mwmw77.workers.dev"
 # Must be byte-identical to the client_id in the extension's manifest.json.
 GOOGLE_CLIENT_ID = "80444110330-c8dotafh7rmopq576bllubjqg69inffj.apps.googleusercontent.com"
 
-# Recurring Price for the Pro plan ($3/month), Snaplingo sandbox. Not a secret —
-# it identifies a price, it does not authorize anything — so it lives here where
-# a deploy is reproducible rather than in an unreviewable secret.
-# The live-mode Price is a different id; swap this when cutting over.
-STRIPE_PRICE_ID = "price_1UAKhVAFgSt5HQHAnqecmJSX"
+# One-time Pro Unlock $3. Not a secret — it identifies a price, it does not
+# authorize anything — so it lives here where a deploy is reproducible rather
+# than in an unreviewable secret. The live-mode Price is a different id; swap
+# this when cutting over.
+STRIPE_PRICE_ID = "price_1UARX7AFgSt5HQHAZdwbPvD1"
 
 # License records. Create with:
 #   npx wrangler kv namespace create LICENSES
@@ -26,16 +26,14 @@ STRIPE_PRICE_ID = "price_1UAKhVAFgSt5HQHAnqecmJSX"
 binding = "LICENSES"
 id = "edf6a884eff441e4b36285c92263ec8a"
 
-# Strongly consistent per-license usage counter.
-[[durable_objects.bindings]]
-name = "USAGE"
-class_name = "UsageCounter"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UsageCounter"]
 
+[[migrations]]
+tag = "v2"
+deleted_classes = ["UsageCounter"]
+
 # Secrets — set via CLI, never in this file:
-#   npx wrangler secret put CLAUDE_API_KEY
 #   npx wrangler secret put STRIPE_SECRET_KEY
 #   npx wrangler secret put STRIPE_WEBHOOK_SECRET

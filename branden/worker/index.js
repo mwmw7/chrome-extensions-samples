@@ -1,54 +1,38 @@
+// License + word-list server for the English→Korean Translator extension.
+//
+// INVARIANT: this Worker never calls an AI provider. Lookups run in the
+// extension on the user's own key (BYOK); a $3 one-time payment unlocks
+// software features only. Storing word text below is a KV write, not an
+// AI call. If you find yourself adding a provider fetch here, the pricing
+// model's premises (no lookup caps, no server cache, one-time charge)
+// stop holding — see the spec before doing that.
+
 import Stripe from 'stripe';
+import {
+  wordLimit, applySaves, applyDeletes, applyReview
+} from './lib.js';
 
-// ============================================================
-//  Config — these constants are the product's unit economics.
-//  Change the numbers here; nothing downstream hardcodes them.
-// ============================================================
-const CONFIG = {
-  // Fixed server-side ON PURPOSE. Never read the model from the request
-  // body: a single leaked license would otherwise let anyone bill the
-  // Anthropic account for Opus-tier calls.
-  MODEL: 'claude-haiku-4-5-20251001',
-  MAX_TOKENS: 1024,
-
-  // No device cap: identity is a Google account, and sharing one means
-  // sharing a password. That is self-limiting in a way a copyable key is not.
-  FREE_DAILY_LIMIT: 10, // AI lookups/day before signing in or subscribing
-  PRO_MONTHLY_LIMIT: 1000, // AI lookups/month for a paying subscriber
-
-  // Keep serving this long after invoice.payment_failed so a expired card
-  // doesn't instantly break a paying customer's extension.
-  GRACE_MS: 3 * 24 * 3600_000
-};
-
-const DAY_MS = 24 * 3600_000;
-const MONTH_MS = 30 * DAY_MS;
-
-// ============================================================
-//  Router
-// ============================================================
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: cors() });
-    }
-
     try {
       switch (url.pathname) {
-        case '/v1/complete':
-          return await handleComplete(request, env);
         case '/v1/me':
           return await handleMe(request, env);
         case '/v1/checkout':
           return await handleCheckout(request, env);
-        case '/v1/portal':
-          return await handlePortal(request, env);
+        case '/v1/words/list':
+          return await handleWordsList(request, env);
+        case '/v1/words/save':
+          return await handleWordsSave(request, env);
+        case '/v1/words/delete':
+          return await handleWordsDelete(request, env);
+        case '/v1/words/review':
+          return await handleWordsReview(request, env);
         case '/stripe/webhook':
           return await handleWebhook(request, env);
         case '/success':
-          return await handleSuccess(request, env);
+          return handleSuccess(request);
         default:
           return json({ error: 'NOT_FOUND' }, 404);
       }
@@ -59,20 +43,18 @@ export default {
   }
 };
 
-// ============================================================
-//  Google identity
-// ============================================================
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
 
-/**
- * Verifies a Google access token server-side and returns the caller.
- *
- * The audience check is the security boundary: without it, an access token
- * minted for ANY other Google app would authenticate here. Never trust an
- * identity the client asserts — only one Google itself vouches for.
- *
- * Results are cached briefly so a burst of word lookups is one Google
- * round-trip, not twenty.
- */
+// --- Google identity ----------------------------------------
+// Verifies an access token and pins the audience to our OAuth client so a
+// token minted for another app cannot authenticate here. Verified results
+// are cached 5 minutes so a burst of saves is one Google round trip.
+
 async function verifyGoogleToken(env, token) {
   if (!token) return null;
 
@@ -111,322 +93,128 @@ function bearer(request) {
   return h.startsWith('Bearer ') ? h.slice(7) : '';
 }
 
-// ============================================================
-//  Entitlement — the layer that sits between Stripe and the API
-// ============================================================
-
-function isActive(rec) {
-  const now = Date.now();
-
-  // Every comparison against a missing period end is false, which would revoke
-  // access for someone Stripe still reports as paying. When the period end is
-  // unknown, fall back to the status alone. That is bounded, not open-ended:
-  // Stripe moves a failing subscription to unpaid or canceled on its own
-  // dunning schedule, and the branches below stop serving once it does.
-  const hasPeriodEnd = Number.isFinite(rec.periodEnd);
-  if (!hasPeriodEnd) {
-    console.error('subscription record has no usable period end', rec.sub);
-  }
-
-  if (rec.status === 'active' || rec.status === 'trialing') {
-    return hasPeriodEnd ? now < rec.periodEnd : true;
-  }
-  // Card failed but the subscription is not dead yet.
-  if (rec.status === 'past_due') {
-    return hasPeriodEnd ? now < rec.periodEnd + CONFIG.GRACE_MS : true;
-  }
-  // Stripe has stopped trying to collect. No period end means no grace window
-  // to measure, and unlike past_due there is no longer a payment in flight.
-  if (rec.status === 'unpaid') {
-    return hasPeriodEnd && now < rec.periodEnd + CONFIG.GRACE_MS;
-  }
-  return false; // canceled, incomplete_expired, ...
-}
-
-/**
- * Resolves who is calling and what they are allowed to spend.
- *
- * Signed out: free tier metered on the device id. That is abusable by
- * reinstalling, which is an acceptable trade for letting a new user reach the
- * "aha" moment before being asked to sign in or pay.
- *
- * Signed in without a subscription: still free tier, but metered on the Google
- * account, so reinstalling no longer resets it.
- */
-async function resolveEntitlement(env, user, deviceId) {
-  if (!user) {
-    if (!deviceId) return { error: 'NO_DEVICE_ID', status: 400 };
-    return {
-      tier: 'free',
-      bucket: `free:${deviceId}`,
-      limit: CONFIG.FREE_DAILY_LIMIT,
-      windowMs: DAY_MS
-    };
-  }
-
-  const rec = await env.LICENSES.get(`user:${user.sub}`, 'json');
-
-  if (!rec || !isActive(rec)) {
-    return {
-      tier: 'free',
-      signedIn: true,
-      bucket: `freeuser:${user.sub}`,
-      limit: CONFIG.FREE_DAILY_LIMIT,
-      windowMs: DAY_MS,
-      rec: rec || null
-    };
-  }
-
-  return {
-    tier: 'pro',
-    signedIn: true,
-    bucket: `pro:${user.sub}`,
-    limit: CONFIG.PRO_MONTHLY_LIMIT,
-    windowMs: MONTH_MS,
-    rec
-  };
-}
-
-/** Counts a use (or peeks) against the strongly-consistent DO counter. */
-async function meter(env, bucket, limit, windowMs, peek = false) {
-  const id = env.USAGE.idFromName(bucket);
-  const stub = env.USAGE.get(id);
-  const res = await stub.fetch('https://usage/', {
-    method: 'POST',
-    body: JSON.stringify({ limit, windowMs, peek })
-  });
-  return res.json();
-}
-
-/**
- * Give a consumed unit back. Called whenever the request fails for a reason
- * that is our fault, not the user's — otherwise an upstream 500 silently
- * bills a paying subscriber for a lookup they never received.
- */
-async function refund(env, bucket) {
-  const stub = env.USAGE.get(env.USAGE.idFromName(bucket));
-  await stub
-    .fetch('https://usage/', {
-      method: 'POST',
-      body: JSON.stringify({ refund: true })
-    })
-    .catch(() => {});
-}
-
-// ============================================================
-//  /v1/complete — the only route that spends Anthropic credit
-// ============================================================
-
-async function handleComplete(request, env) {
-  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
-
-  const body = await request.json();
+async function requireUser(request, env) {
+  if (request.method !== 'POST') return { resp: json({ error: 'METHOD' }, 405) };
   const user = await verifyGoogleToken(env, bearer(request));
-  const deviceId = request.headers.get('x-device-id') || '';
-
-  const ent = await resolveEntitlement(env, user, deviceId);
-  if (ent.error) return json({ error: ent.error }, ent.status);
-
-  const used = await meter(env, ent.bucket, ent.limit, ent.windowMs);
-  if (!used.ok) {
-    return json(
-      {
-        error: ent.tier === 'free' ? 'FREE_LIMIT_REACHED' : 'QUOTA_EXCEEDED',
-        tier: ent.tier,
-        signedIn: !!ent.signedIn,
-        limit: ent.limit,
-        resetAt: used.resetAt
-      },
-      429
-    );
-  }
-
-  // Prompts live server-side: the extension sends structured intent, not raw
-  // text. This stops a leaked license from being used as a general-purpose
-  // Claude proxy, and lets prompts ship without a Web Store review cycle.
-  const prompt = buildPrompt(body);
-  if (!prompt) {
-    await refund(env, ent.bucket);
-    return json({ error: 'BAD_REQUEST' }, 400);
-  }
-
-  // Past this point the unit is spent, so every failure exit must refund it.
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: CONFIG.MODEL,
-        max_tokens: CONFIG.MAX_TOKENS,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error('anthropic error', response.status, text);
-      await refund(env, ent.bucket);
-      return json({ error: 'UPSTREAM_ERROR', status: response.status }, 502);
-    }
-
-    const data = await response.json();
-    const raw = data?.content?.[0]?.text;
-    if (!raw) {
-      await refund(env, ent.bucket);
-      return json({ error: 'EMPTY_RESPONSE' }, 502);
-    }
-
-    // The model occasionally emits unparseable JSON; that is not the user's
-    // fault either.
-    let detail;
-    try {
-      detail = parseJSON(raw);
-    } catch {
-      await refund(env, ent.bucket);
-      return json({ error: 'BAD_MODEL_OUTPUT' }, 502);
-    }
-
-    return json({
-      detail,
-      tier: ent.tier,
-      signedIn: !!ent.signedIn,
-      remaining: used.remaining,
-      resetAt: used.resetAt
-    });
-  } catch (err) {
-    await refund(env, ent.bucket);
-    throw err;
-  }
+  if (!user) return { resp: json({ error: 'SIGN_IN_REQUIRED' }, 401) };
+  return { user };
 }
 
-// ============================================================
-//  Prompts (moved out of the extension)
-// ============================================================
-
-function buildPrompt(body) {
-  if (body.type === 'word' && body.word) {
-    return wordPrompt(String(body.word).slice(0, 60), String(body.context || '').slice(0, 300));
-  }
-  if (body.type === 'phrase' && body.phrase) {
-    return phrasePrompt(
-      String(body.phrase).slice(0, 200),
-      String(body.pageText || '').slice(0, 1500)
-    );
-  }
-  return null;
+async function loadRec(env, sub) {
+  return (await env.LICENSES.get(`user:${sub}`, 'json')) || null;
 }
 
-function wordPrompt(word, context) {
-  const ctxPart = context
-    ? `\nSentence from webpage: "${context}"\nInclude contextSentence, contextKorean (문맥상 번역), contextExplanation (왜 이 의미인지) fields.\n`
-    : '';
-
-  return `English-Korean dictionary. Word: "${word}"${ctxPart}
-Return ONLY valid JSON (no markdown):
-{"definitions":[{"pos":"품사","meaning":"한국어 뜻","example":"example sentence"}],
-"korean":"대표 번역",${context ? '"contextSentence":"원문","contextKorean":"문맥 번역","contextExplanation":"설명",' : ''}
-"grammar":"문법 설명","nativeUsage":"사용법/뉘앙스",
-"idioms":[{"expression":"...","meaning":"..."}],
-"examples":[{"en":"...","ko":"..."}],
-"synonyms":["..."],"antonyms":["..."]}
-2-3 definitions, 2 idioms, 2 examples, 3 synonyms, 2 antonyms. Be concise.`;
+async function loadWords(env, sub) {
+  return (await env.LICENSES.get(`words:${sub}`, 'json')) || {};
 }
 
-function phrasePrompt(phrase, pageText) {
-  const ctxPart = pageText ? `\nArticle excerpt:\n"${pageText}"\n` : '';
-
-  return `English-Korean phrase tutor for Korean learners.${ctxPart}
-The learner found this phrase in the article and doesn't understand it: "${phrase}"
-Even though each word may be simple, the combined meaning is confusing.
-
-Return ONLY valid JSON (no markdown):
-{"phrase":"the phrase","korean":"한국어 번역",
-"meaning":"이 표현이 전체적으로 무슨 뜻인지 한국어로 쉽게 설명",
-"literal":"각 단어의 개별 뜻과 왜 합치면 다른 의미가 되는지 설명",
-"contextMeaning":"이 글에서 이 표현이 구체적으로 어떤 의미로 쓰였는지 설명",
-"usage":"격식/비격식, 어떤 상황에서 쓰는지, 주의할 점",
-"examples":[{"en":"...","ko":"..."}],
-"similar":["비슷한 표현1","비슷한 표현2"]}
-2 examples, 2-3 similar expressions. Be concise.`;
-}
-
-function parseJSON(raw) {
-  const text = raw.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
-  return JSON.parse(text);
-}
-
-// ============================================================
-//  Subscription records — keyed by Google account, not by a key the
-//  user has to keep. Nothing to copy, lose, or re-issue.
-// ============================================================
-
-async function putSub(env, rec) {
-  await env.LICENSES.put(`user:${rec.sub}`, JSON.stringify(rec));
-  await env.LICENSES.put(`customer:${rec.customerId}`, rec.sub);
-}
-
-async function findSubByCustomer(env, customerId) {
-  const sub = await env.LICENSES.get(`customer:${customerId}`);
-  if (!sub) return null;
-  return env.LICENSES.get(`user:${sub}`, 'json');
-}
-
-/**
- * `current_period_end` sits on the Subscription in older API versions and on
- * its items from Basil onward. Webhook payloads are shaped by the API version
- * selected on the endpoint — account configuration this code does not control
- * and cannot read — so check both rather than assume either.
- *
- * Returns null instead of NaN when neither is present. A NaN period end fails
- * every comparison in isActive(), which would silently drop a paying
- * subscriber to the free tier.
- */
-function periodEndMs(subscription) {
-  const secs =
-    subscription?.items?.data?.[0]?.current_period_end ??
-    subscription?.current_period_end;
-  return typeof secs === 'number' ? secs * 1000 : null;
-}
-
-// --- /v1/me: identity + plan + quota, never consumes quota --
+// --- /v1/me -------------------------------------------------
+// Never an error for signed-out callers: the extension probes this on
+// startup and "not signed in" is a normal state, not a failure.
 
 async function handleMe(request, env) {
   if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
-
-  const { deviceId } = await request.json().catch(() => ({}));
   const user = await verifyGoogleToken(env, bearer(request));
-  const ent = await resolveEntitlement(env, user, deviceId || '');
-  if (ent.error) return json({ error: ent.error, tier: 'free' }, ent.status);
-
-  const usage = await meter(env, ent.bucket, ent.limit, ent.windowMs, true);
+  if (!user) {
+    return json({ signedIn: false, email: null, paid: false, wordCount: 0, limit: wordLimit(false) });
+  }
+  const rec = await loadRec(env, user.sub);
+  const paid = !!rec?.paid;
   return json({
-    tier: ent.tier,
-    signedIn: !!user,
-    email: user?.email ?? null,
-    limit: ent.limit,
-    remaining: usage.remaining,
-    resetAt: usage.resetAt,
-    status: ent.rec?.status ?? null,
-    periodEnd: ent.rec?.periodEnd ?? null,
-    cancelAtPeriodEnd: ent.rec?.cancelAtPeriodEnd ?? false
+    signedIn: true,
+    email: user.email,
+    paid,
+    wordCount: rec?.wordCount ?? 0,
+    limit: wordLimit(paid)
   });
 }
 
-// ============================================================
-//  Stripe routes
-// ============================================================
+// --- Words --------------------------------------------------
+
+async function handleWordsList(request, env) {
+  const { user, resp } = await requireUser(request, env);
+  if (resp) return resp;
+  return json({ words: await loadWords(env, user.sub) });
+}
+
+async function handleWordsSave(request, env) {
+  const { user, resp } = await requireUser(request, env);
+  if (resp) return resp;
+
+  const body = await request.json().catch(() => ({}));
+  const incoming = Array.isArray(body.words) ? body.words.slice(0, 100) : [];
+  if (!incoming.length) return json({ error: 'BAD_REQUEST' }, 400);
+
+  const rec = (await loadRec(env, user.sub)) || {
+    sub: user.sub, email: user.email, paid: false, wordCount: 0
+  };
+  const words = await loadWords(env, user.sub);
+  const result = applySaves(words, incoming, {
+    paid: !!rec.paid,
+    migrate: !!body.migrate,
+    now: Date.now()
+  });
+
+  rec.email = user.email || rec.email;
+  rec.wordCount = Object.keys(result.words).length;
+  await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(result.words));
+  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(rec));
+
+  return json({
+    saved: result.saved,
+    rejected: result.rejected,
+    wordCount: rec.wordCount,
+    limit: wordLimit(!!rec.paid)
+  });
+}
+
+async function handleWordsDelete(request, env) {
+  const { user, resp } = await requireUser(request, env);
+  if (resp) return resp;
+
+  const body = await request.json().catch(() => ({}));
+  const list = Array.isArray(body.words) ? body.words.slice(0, 100) : [];
+  if (!list.length) return json({ error: 'BAD_REQUEST' }, 400);
+
+  const rec = (await loadRec(env, user.sub)) || {
+    sub: user.sub, email: user.email, paid: false, wordCount: 0
+  };
+  const words = await loadWords(env, user.sub);
+  const result = applyDeletes(words, list);
+
+  rec.wordCount = Object.keys(result.words).length;
+  await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(result.words));
+  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(rec));
+
+  return json({ removed: result.removed, wordCount: rec.wordCount });
+}
+
+async function handleWordsReview(request, env) {
+  const { user, resp } = await requireUser(request, env);
+  if (resp) return resp;
+
+  const body = await request.json().catch(() => ({}));
+  const word = String(body.word || '').trim().toLowerCase();
+  const grade = body.grade === 'again' ? 'again' : 'good';
+
+  const words = await loadWords(env, user.sub);
+  if (!words[word]) return json({ error: 'NOT_SAVED' }, 404);
+
+  const next = applyReview(words[word], grade, Date.now());
+  words[word] = { ...words[word], ...next };
+  await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(words));
+
+  return json({ word, ...next });
+}
+
+// --- Stripe -------------------------------------------------
 
 function getStripe(env) {
   // The default http client uses Node APIs that don't exist on Workers.
-  //
-  // Pinned so responses stay a fixed shape as the account default moves. Note
-  // this does NOT govern webhook payloads — those follow the API version set on
-  // the endpoint in the Dashboard, so the two can and do differ. Read
-  // periodEndMs() before assuming a field sits where this version puts it.
+  // Pinned so responses keep one shape as the account default moves; note
+  // webhook payloads follow the API version set on the ENDPOINT, not this
+  // pin — we only read cs.payment_intent / charge.payment_intent, which
+  // are stable across versions.
   return new Stripe(env.STRIPE_SECRET_KEY, {
     httpClient: Stripe.createFetchHttpClient(),
     apiVersion: '2024-11-20.acacia'
@@ -434,57 +222,28 @@ function getStripe(env) {
 }
 
 async function handleCheckout(request, env) {
-  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
+  const { user, resp } = await requireUser(request, env);
+  if (resp) return resp;
 
-  // Sign-in is required BEFORE paying. Otherwise we would take money with no
-  // idea which account the subscription belongs to.
-  const user = await verifyGoogleToken(env, bearer(request));
-  if (!user) return json({ error: 'SIGN_IN_REQUIRED' }, 401);
-
-  const existing = await env.LICENSES.get(`user:${user.sub}`, 'json');
-  if (existing && isActive(existing)) {
-    return json({ error: 'ALREADY_SUBSCRIBED' }, 409);
-  }
+  const rec = await loadRec(env, user.sub);
+  if (rec?.paid) return json({ error: 'ALREADY_PAID' }, 409);
 
   const stripe = getStripe(env);
   const base = env.PUBLIC_BASE_URL;
-
   const session = await stripe.checkout.sessions.create({
-    mode: 'subscription',
+    mode: 'payment',
     line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
     allow_promotion_codes: true,
-    // This is the link between the Google account and the Stripe customer.
-    // The webhook reads it back, so the two can never drift apart even if the
-    // user pays with a different email than they signed in with.
+    // The link between the Google account and the payment. The webhook
+    // reads it back, so the two can never drift apart even if the user
+    // pays with a different email than they signed in with.
     client_reference_id: user.sub,
     customer_email: user.email || undefined,
     success_url: `${base}/success`,
     cancel_url: `${base}/success?canceled=1`
   });
-
   return json({ url: session.url });
 }
-
-async function handlePortal(request, env) {
-  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
-
-  const user = await verifyGoogleToken(env, bearer(request));
-  if (!user) return json({ error: 'SIGN_IN_REQUIRED' }, 401);
-
-  const rec = await env.LICENSES.get(`user:${user.sub}`, 'json');
-  if (!rec) return json({ error: 'NO_SUBSCRIPTION' }, 404);
-
-  const stripe = getStripe(env);
-  const session = await stripe.billingPortal.sessions.create({
-    customer: rec.customerId,
-    // Not the bare base URL: the router has no "/" case, so returning there
-    // hands the user a JSON 404 as the last thing they see.
-    return_url: `${env.PUBLIC_BASE_URL}/success`
-  });
-  return json({ url: session.url });
-}
-
-// --- Webhook ------------------------------------------------
 
 async function handleWebhook(request, env) {
   if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
@@ -497,9 +256,7 @@ async function handleWebhook(request, env) {
   try {
     // constructEventAsync, NOT constructEvent — Workers has no sync crypto.
     event = await stripe.webhooks.constructEventAsync(
-      body,
-      sig,
-      env.STRIPE_WEBHOOK_SECRET
+      body, sig, env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
     return json({ error: 'BAD_SIGNATURE', message: err.message }, 400);
@@ -508,189 +265,63 @@ async function handleWebhook(request, env) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const cs = event.data.object;
-      if (cs.mode !== 'subscription' || !cs.subscription) break;
-
-      // client_reference_id was set to the Google sub at checkout creation.
-      // Without it we cannot tell whose account this payment belongs to, so
-      // record the orphan loudly rather than silently dropping a paid signup.
+      if (cs.mode !== 'payment') break;
       if (!cs.client_reference_id) {
+        // Without it we cannot tell whose account this payment belongs to —
+        // record the orphan loudly rather than silently dropping a paid unlock.
         console.error('checkout completed with no client_reference_id', cs.id);
         break;
       }
+      const sub = cs.client_reference_id;
+      const pi = typeof cs.payment_intent === 'string'
+        ? cs.payment_intent
+        : cs.payment_intent?.id || null;
 
-      const subscription = await stripe.subscriptions.retrieve(cs.subscription);
-      const periodEnd = periodEndMs(subscription);
-      if (periodEnd === null) {
-        // Record the signup regardless — dropping it would take the money and
-        // grant nothing. isActive() falls back to the status for such records.
-        console.error('no current_period_end on subscription', cs.subscription);
-      }
-      await putSub(env, {
-        sub: cs.client_reference_id,
-        email: cs.customer_details?.email || null,
-        customerId: cs.customer,
-        subscriptionId: cs.subscription,
-        status: subscription.status,
-        periodEnd,
-        cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
-        createdAt: Date.now()
-      });
+      const rec = (await loadRec(env, sub)) || { sub, wordCount: 0 };
+      rec.email = cs.customer_details?.email || rec.email || null;
+      rec.paid = true;
+      rec.purchasedAt = Date.now();
+      rec.paymentIntentId = pi;
+      await env.LICENSES.put(`user:${sub}`, JSON.stringify(rec));
+      if (pi) await env.LICENSES.put(`payment:${pi}`, sub);
       break;
     }
-
-    case 'customer.subscription.updated':
-    case 'customer.subscription.deleted': {
-      const subscription = event.data.object;
-      const rec = await findSubByCustomer(env, subscription.customer);
-      if (rec) {
-        rec.status =
-          event.type === 'customer.subscription.deleted'
-            ? 'canceled'
-            : subscription.status;
-
-        // Re-fetch rather than write a null: the retrieved object comes back
-        // in the version this Worker pins, so its shape is ours to rely on.
-        // Keep the previous period end if even that comes up empty.
-        let periodEnd = periodEndMs(subscription);
-        if (periodEnd === null) {
-          console.error('event carried no period end, refetching', subscription.id);
-          periodEnd = periodEndMs(
-            await stripe.subscriptions.retrieve(subscription.id)
-          );
-        }
-        if (periodEnd !== null) rec.periodEnd = periodEnd;
-
-        rec.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
-        await putSub(env, rec);
+    case 'charge.refunded': {
+      const pi = event.data.object.payment_intent;
+      if (!pi) break;
+      const sub = await env.LICENSES.get(`payment:${pi}`);
+      if (!sub) {
+        console.error('refund for unknown payment_intent', pi);
+        break;
       }
-      break;
-    }
-
-    case 'invoice.payment_failed': {
-      const inv = event.data.object;
-      const rec = await findSubByCustomer(env, inv.customer);
+      const rec = await loadRec(env, sub);
       if (rec) {
-        rec.status = 'past_due';
-        await putSub(env, rec);
+        // Lock the features, keep the words — the data is the user's.
+        rec.paid = false;
+        await env.LICENSES.put(`user:${sub}`, JSON.stringify(rec));
       }
       break;
     }
   }
-
   return json({ received: true });
 }
 
-// --- /success: shows the license key, no separate site needed
+// --- /success -----------------------------------------------
 
-async function handleSuccess(request, env) {
+function handleSuccess(request) {
   const url = new URL(request.url);
-
-  if (url.searchParams.get('canceled')) {
-    return html('결제가 취소되었습니다', '<p>이 탭을 닫으셔도 됩니다.</p>');
-  }
-
-  // There is no key to hand over: the subscription is attached to the Google
-  // account that started checkout, and the webhook records it.
-  return html(
-    '결제 완료',
-    `<p>구독이 활성화되었습니다.</p>
-     <p class="hint">이 탭을 닫고 확장 프로그램으로 돌아가세요.
-     로그인한 Google 계정에 자동으로 적용됩니다.<br>
-     바로 반영되지 않으면 설정에서 새로고침하세요.</p>`
-  );
-}
-
-// ============================================================
-//  Durable Object — strongly consistent usage counter
-//  (an in-memory Map does not work: each isolate counts separately)
-// ============================================================
-
-export class UsageCounter {
-  constructor(state) {
-    this.state = state;
-  }
-
-  async fetch(request) {
-    const { limit, windowMs, peek, refund } = await request.json();
-    const now = Date.now();
-
-    let data = (await this.state.storage.get('c')) || { count: 0, resetAt: 0 };
-
-    if (refund) {
-      // Do not resurrect an expired window just to refund into it.
-      if (now < data.resetAt && data.count > 0) {
-        data.count--;
-        await this.state.storage.put('c', data);
-      }
-      return Response.json({ ok: true, count: data.count });
-    }
-
-    if (now >= data.resetAt) {
-      data = { count: 0, resetAt: now + windowMs };
-    }
-
-    if (peek) {
-      return Response.json({
-        ok: data.count < limit,
-        remaining: Math.max(0, limit - data.count),
-        resetAt: data.resetAt
-      });
-    }
-
-    if (data.count >= limit) {
-      return Response.json({ ok: false, remaining: 0, resetAt: data.resetAt });
-    }
-
-    data.count++;
-    await this.state.storage.put('c', data);
-    return Response.json({
-      ok: true,
-      remaining: limit - data.count,
-      resetAt: data.resetAt
-    });
-  }
-}
-
-// ============================================================
-//  Helpers
-// ============================================================
-
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers':
-      'Content-Type, x-license-key, x-device-id, stripe-signature'
-  };
-}
-
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...cors() }
-  });
-}
-
-function escapeHtml(s) {
-  return String(s).replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
-  );
-}
-
-function html(title, bodyHtml) {
+  const canceled = url.searchParams.get('canceled');
+  const body = canceled
+    ? '<h1>Payment canceled</h1><p>No charge was made. You can close this tab.</p>'
+    : `<h1>Payment complete</h1>
+       <p>Pro features are now unlocked.</p>
+       <p class="hint">Close this tab and return to the extension. The unlock
+       applies to the Google account you signed in with.<br>
+       If it does not show up right away, use Refresh in Settings.</p>`;
   return new Response(
-    `<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<style>
-body{font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:80px auto;padding:0 24px;color:#1a1a1a;line-height:1.6}
-h1{font-size:22px;margin-bottom:8px}
-code{display:block;background:#f5f3ff;border:2px solid #7c3aed;color:#5b21b6;
-padding:14px;border-radius:8px;font-size:16px;word-break:break-all;margin:20px 0;user-select:all}
-.hint{font-size:13px;color:#666}
-</style></head><body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`,
-    { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    `<!doctype html><meta charset="utf-8">
+     <style>body{font-family:system-ui;max-width:28rem;margin:15vh auto;padding:0 1rem}
+     .hint{color:#666;font-size:.9rem}</style>${body}`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
   );
 }
