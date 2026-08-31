@@ -8,9 +8,7 @@
 // stop holding — see the spec before doing that.
 
 import Stripe from 'stripe';
-import {
-  wordLimit, applySaves, applyDeletes, applyReview
-} from './lib.js';
+import { wordLimit, applySaves, applyDeletes, applyReview } from './lib.js';
 
 export default {
   async fetch(request, env) {
@@ -94,7 +92,8 @@ function bearer(request) {
 }
 
 async function requireUser(request, env) {
-  if (request.method !== 'POST') return { resp: json({ error: 'METHOD' }, 405) };
+  if (request.method !== 'POST')
+    return { resp: json({ error: 'METHOD' }, 405) };
   const user = await verifyGoogleToken(env, bearer(request));
   if (!user) return { resp: json({ error: 'SIGN_IN_REQUIRED' }, 401) };
   return { user };
@@ -116,7 +115,13 @@ async function handleMe(request, env) {
   if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
   const user = await verifyGoogleToken(env, bearer(request));
   if (!user) {
-    return json({ signedIn: false, email: null, paid: false, wordCount: 0, limit: wordLimit(false) });
+    return json({
+      signedIn: false,
+      email: null,
+      paid: false,
+      wordCount: 0,
+      limit: wordLimit(false)
+    });
   }
   const rec = await loadRec(env, user.sub);
   const paid = !!rec?.paid;
@@ -146,7 +151,10 @@ async function handleWordsSave(request, env) {
   if (!incoming.length) return json({ error: 'BAD_REQUEST' }, 400);
 
   const rec = (await loadRec(env, user.sub)) || {
-    sub: user.sub, email: user.email, paid: false, wordCount: 0
+    sub: user.sub,
+    email: user.email,
+    paid: false,
+    wordCount: 0
   };
   const words = await loadWords(env, user.sub);
   const result = applySaves(words, incoming, {
@@ -154,16 +162,26 @@ async function handleWordsSave(request, env) {
     migrate: !!body.migrate,
     now: Date.now()
   });
-
-  rec.email = user.email || rec.email;
-  rec.wordCount = Object.keys(result.words).length;
+  const wordCount = Object.keys(result.words).length;
   await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(result.words));
-  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(rec));
+
+  // Re-read immediately before the put: a checkout webhook can flip
+  // paid:true in the gap between the read above and this write, and writing
+  // back the stale `rec` would clobber that back to paid:false — a paying
+  // user permanently locked out with no charge to resend. Take everything
+  // from the fresh read except the fields this handler owns.
+  const freshRec = (await loadRec(env, user.sub)) || {
+    sub: user.sub,
+    paid: false
+  };
+  freshRec.email = user.email || freshRec.email || null;
+  freshRec.wordCount = wordCount;
+  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(freshRec));
 
   return json({
     saved: result.saved,
     rejected: result.rejected,
-    wordCount: rec.wordCount,
+    wordCount,
     limit: wordLimit(!!rec.paid)
   });
 }
@@ -176,35 +194,79 @@ async function handleWordsDelete(request, env) {
   const list = Array.isArray(body.words) ? body.words.slice(0, 100) : [];
   if (!list.length) return json({ error: 'BAD_REQUEST' }, 400);
 
-  const rec = (await loadRec(env, user.sub)) || {
-    sub: user.sub, email: user.email, paid: false, wordCount: 0
-  };
   const words = await loadWords(env, user.sub);
   const result = applyDeletes(words, list);
-
-  rec.wordCount = Object.keys(result.words).length;
+  const wordCount = Object.keys(result.words).length;
   await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(result.words));
-  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(rec));
 
-  return json({ removed: result.removed, wordCount: rec.wordCount });
+  // Same re-read-before-put as handleWordsSave — see comment there.
+  const freshRec = (await loadRec(env, user.sub)) || {
+    sub: user.sub,
+    paid: false
+  };
+  freshRec.email = user.email || freshRec.email || null;
+  freshRec.wordCount = wordCount;
+  await env.LICENSES.put(`user:${user.sub}`, JSON.stringify(freshRec));
+
+  return json({ removed: result.removed, wordCount });
 }
 
+// Accepts either the legacy single-word shape ({word, grade}) or a batch
+// ({grades: [{word, grade}]}) — batching lets the client coalesce a burst of
+// grades into one KV write instead of one rewrite-the-whole-map POST per
+// card (KV allows ~1 write/sec/key; unbatched bursts can drop mutations).
 async function handleWordsReview(request, env) {
   const { user, resp } = await requireUser(request, env);
   if (resp) return resp;
 
   const body = await request.json().catch(() => ({}));
-  const word = String(body.word || '').trim().toLowerCase();
-  const grade = body.grade === 'again' ? 'again' : 'good';
+  const isBatch = Array.isArray(body.grades);
+
+  const items = isBatch
+    ? body.grades.map((g) => ({
+        word: String(g?.word || '')
+          .trim()
+          .toLowerCase(),
+        grade: g?.grade === 'again' ? 'again' : 'good'
+      }))
+    : [
+        {
+          word: String(body.word || '')
+            .trim()
+            .toLowerCase(),
+          grade: body.grade === 'again' ? 'again' : 'good'
+        }
+      ];
 
   const words = await loadWords(env, user.sub);
-  if (!words[word]) return json({ error: 'NOT_SAVED' }, 404);
+  const now = Date.now();
+  const results = [];
+  const notSaved = [];
 
-  const next = applyReview(words[word], grade, Date.now());
-  words[word] = { ...words[word], ...next };
-  await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(words));
+  for (const { word, grade } of items) {
+    if (!word || !Object.prototype.hasOwnProperty.call(words, word)) {
+      notSaved.push(word);
+      continue;
+    }
+    const next = applyReview(words[word], grade, now);
+    words[word] = { ...words[word], ...next };
+    results.push({ word, ...next });
+  }
 
-  return json({ word, ...next });
+  if (!isBatch) {
+    if (!results.length) return json({ error: 'NOT_SAVED' }, 404);
+    await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(words));
+    return json({
+      word: results[0].word,
+      box: results[0].box,
+      nextDue: results[0].nextDue
+    });
+  }
+
+  if (results.length) {
+    await env.LICENSES.put(`words:${user.sub}`, JSON.stringify(words));
+  }
+  return json({ results, notSaved });
 }
 
 // --- Stripe -------------------------------------------------
@@ -256,7 +318,9 @@ async function handleWebhook(request, env) {
   try {
     // constructEventAsync, NOT constructEvent — Workers has no sync crypto.
     event = await stripe.webhooks.constructEventAsync(
-      body, sig, env.STRIPE_WEBHOOK_SECRET
+      body,
+      sig,
+      env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
     return json({ error: 'BAD_SIGNATURE', message: err.message }, 400);
@@ -266,6 +330,10 @@ async function handleWebhook(request, env) {
     case 'checkout.session.completed': {
       const cs = event.data.object;
       if (cs.mode !== 'payment') break;
+      // Delayed-notification payment methods (e.g. bank debits) can
+      // complete a Checkout Session before the payment itself settles —
+      // don't unlock until Stripe confirms the money actually arrived.
+      if (cs.payment_status !== 'paid') break;
       if (!cs.client_reference_id) {
         // Without it we cannot tell whose account this payment belongs to —
         // record the orphan loudly rather than silently dropping a paid unlock.
@@ -273,9 +341,10 @@ async function handleWebhook(request, env) {
         break;
       }
       const sub = cs.client_reference_id;
-      const pi = typeof cs.payment_intent === 'string'
-        ? cs.payment_intent
-        : cs.payment_intent?.id || null;
+      const pi =
+        typeof cs.payment_intent === 'string'
+          ? cs.payment_intent
+          : cs.payment_intent?.id || null;
 
       const rec = (await loadRec(env, sub)) || { sub, wordCount: 0 };
       rec.email = cs.customer_details?.email || rec.email || null;

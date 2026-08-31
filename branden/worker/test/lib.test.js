@@ -1,8 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FREE_WORD_LIMIT, PAID_WORD_CAP, DETAIL_MAX_BYTES, BOX_INTERVAL_MS,
-  wordLimit, applySaves, applyDeletes, applyReview
+  FREE_WORD_LIMIT,
+  PAID_WORD_CAP,
+  DETAIL_MAX_BYTES,
+  BOX_INTERVAL_MS,
+  wordLimit,
+  applySaves,
+  applyDeletes,
+  applyReview
 } from '../lib.js';
 
 const NOW = 1788200000000;
@@ -13,7 +19,11 @@ test('wordLimit: free 200, paid 20000', () => {
 });
 
 test('applySaves: new word gets box 1, due immediately', () => {
-  const { words, saved, rejected } = applySaves({}, [{ word: 'agent', ko: '대리인' }], { paid: false, now: NOW });
+  const { words, saved, rejected } = applySaves(
+    {},
+    [{ word: 'agent', ko: '대리인' }],
+    { paid: false, now: NOW }
+  );
   assert.deepEqual(saved, ['agent']);
   assert.deepEqual(rejected, []);
   assert.equal(words.agent.savedAt, NOW);
@@ -24,19 +34,26 @@ test('applySaves: new word gets box 1, due immediately', () => {
 
 test('applySaves: free user rejected past 200, counts only NEW words', () => {
   const existing = {};
-  for (let i = 0; i < 199; i++) existing[`w${i}`] = { savedAt: 1, box: 1, nextDue: 1 };
+  for (let i = 0; i < 199; i++)
+    existing[`w${i}`] = { savedAt: 1, box: 1, nextDue: 1 };
   const { saved, rejected } = applySaves(
     existing,
-    [{ word: 'w0' }, { word: 'a' }, { word: 'b' }],  // w0 은 기존 → 카운트 제외
+    [{ word: 'w0' }, { word: 'a' }, { word: 'b' }], // w0 은 기존 → 카운트 제외
     { paid: false, now: NOW }
   );
-  assert.deepEqual(saved, ['w0', 'a']);   // 199 + a = 200 (한도 도달), b 거부
+  assert.deepEqual(saved, ['w0', 'a']); // 199 + a = 200 (한도 도달), b 거부
   assert.deepEqual(rejected, ['b']);
 });
 
 test('applySaves: existing word updates ko/detail, keeps review state', () => {
-  const existing = { agent: { savedAt: 1, ko: null, detail: null, box: 3, nextDue: 99 } };
-  const { words } = applySaves(existing, [{ word: 'agent', ko: '대리인', detail: { korean: '대리인' } }], { paid: false, now: NOW });
+  const existing = {
+    agent: { savedAt: 1, ko: null, detail: null, box: 3, nextDue: 99 }
+  };
+  const { words } = applySaves(
+    existing,
+    [{ word: 'agent', ko: '대리인', detail: { korean: '대리인' } }],
+    { paid: false, now: NOW }
+  );
   assert.equal(words.agent.box, 3);
   assert.equal(words.agent.nextDue, 99);
   assert.equal(words.agent.savedAt, 1);
@@ -46,14 +63,22 @@ test('applySaves: existing word updates ko/detail, keeps review state', () => {
 
 test('applySaves: migrate bypasses free limit but not the 20k cap', () => {
   const existing = {};
-  for (let i = 0; i < 250; i++) existing[`w${i}`] = { savedAt: 1, box: 1, nextDue: 1 };
-  const { saved } = applySaves(existing, [{ word: 'extra' }], { paid: false, migrate: true, now: NOW });
+  for (let i = 0; i < 250; i++)
+    existing[`w${i}`] = { savedAt: 1, box: 1, nextDue: 1 };
+  const { saved } = applySaves(existing, [{ word: 'extra' }], {
+    paid: false,
+    migrate: true,
+    now: NOW
+  });
   assert.deepEqual(saved, ['extra']);
 });
 
 test('applySaves: oversized detail is dropped, word still saved', () => {
   const big = { x: 'y'.repeat(DETAIL_MAX_BYTES) };
-  const { words, saved } = applySaves({}, [{ word: 'agent', detail: big }], { paid: true, now: NOW });
+  const { words, saved } = applySaves({}, [{ word: 'agent', detail: big }], {
+    paid: true,
+    now: NOW
+  });
   assert.deepEqual(saved, ['agent']);
   assert.equal(words.agent.detail, null);
 });
@@ -64,9 +89,41 @@ test('applyDeletes removes and reports', () => {
   assert.deepEqual(Object.keys(words), ['b']);
 });
 
+test('applySaves/applyDeletes: "constructor" is not treated as pre-existing (prototype pollution)', () => {
+  // Object.prototype.constructor is truthy on any plain object, so a naive
+  // `if (out[word])` membership check mistakes it for an already-saved word:
+  // applySaves would skip creating a real entry (no savedAt/box, not counted)
+  // and applyDeletes would report it "removed" without ever deleting anything.
+  const { words, saved, rejected } = applySaves(
+    {},
+    [{ word: 'constructor', ko: '생성자' }],
+    { paid: false, now: NOW }
+  );
+  assert.deepEqual(saved, ['constructor']);
+  assert.deepEqual(rejected, []);
+  assert.equal(words.constructor.savedAt, NOW);
+  assert.equal(words.constructor.box, 1);
+  assert.equal(Object.keys(words).length, 1);
+
+  const { removed } = applyDeletes({}, ['constructor']);
+  assert.deepEqual(removed, []);
+});
+
 test('applyReview: good climbs to 3 and holds; again drops to 1', () => {
-  assert.deepEqual(applyReview({ box: 1 }, 'good', NOW), { box: 2, nextDue: NOW + BOX_INTERVAL_MS[2] });
-  assert.deepEqual(applyReview({ box: 3 }, 'good', NOW), { box: 3, nextDue: NOW + BOX_INTERVAL_MS[3] });
-  assert.deepEqual(applyReview({ box: 3 }, 'again', NOW), { box: 1, nextDue: NOW + BOX_INTERVAL_MS[1] });
-  assert.deepEqual(applyReview({}, 'good', NOW), { box: 2, nextDue: NOW + BOX_INTERVAL_MS[2] }); // box 없음 = 1 취급
+  assert.deepEqual(applyReview({ box: 1 }, 'good', NOW), {
+    box: 2,
+    nextDue: NOW + BOX_INTERVAL_MS[2]
+  });
+  assert.deepEqual(applyReview({ box: 3 }, 'good', NOW), {
+    box: 3,
+    nextDue: NOW + BOX_INTERVAL_MS[3]
+  });
+  assert.deepEqual(applyReview({ box: 3 }, 'again', NOW), {
+    box: 1,
+    nextDue: NOW + BOX_INTERVAL_MS[1]
+  });
+  assert.deepEqual(applyReview({}, 'good', NOW), {
+    box: 2,
+    nextDue: NOW + BOX_INTERVAL_MS[2]
+  }); // box 없음 = 1 취급
 });

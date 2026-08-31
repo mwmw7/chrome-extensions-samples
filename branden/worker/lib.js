@@ -25,13 +25,17 @@ export function applySaves(words, incoming, { paid, migrate = false, now }) {
   let count = Object.keys(out).length;
 
   for (const item of incoming) {
-    const word = String(item.word || '').trim().toLowerCase().slice(0, 60);
+    const word = String(item.word || '')
+      .trim()
+      .toLowerCase()
+      .slice(0, 60);
     if (!word) continue;
 
     let detail = item.detail ?? null;
-    if (detail && JSON.stringify(detail).length > DETAIL_MAX_BYTES) detail = null;
+    if (detail && JSON.stringify(detail).length > DETAIL_MAX_BYTES)
+      detail = null;
 
-    if (out[word]) {
+    if (Object.prototype.hasOwnProperty.call(out, word)) {
       out[word] = {
         ...out[word],
         ko: item.ko ?? out[word].ko ?? null,
@@ -45,7 +49,13 @@ export function applySaves(words, incoming, { paid, migrate = false, now }) {
       rejected.push(word);
       continue;
     }
-    out[word] = { savedAt: now, ko: item.ko ?? null, detail, box: 1, nextDue: now };
+    out[word] = {
+      savedAt: now,
+      ko: item.ko ?? null,
+      detail,
+      box: 1,
+      nextDue: now
+    };
     count += 1;
     saved.push(word);
   }
@@ -56,8 +66,11 @@ export function applyDeletes(words, list) {
   const out = { ...words };
   const removed = [];
   for (const raw of list) {
-    const word = String(raw || '').trim().toLowerCase();
-    if (out[word]) {
+    const word = String(raw || '')
+      .trim()
+      .toLowerCase()
+      .slice(0, 60);
+    if (Object.prototype.hasOwnProperty.call(out, word)) {
       delete out[word];
       removed.push(word);
     }
