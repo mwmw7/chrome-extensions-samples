@@ -101,16 +101,31 @@ async function signOut() {
   // Clear this device's account-scoped mirror/queue too, not just `me` —
   // otherwise a later sign-in with a DIFFERENT Google account flushes the
   // previous account's still-queued ops into the new account's word list.
+  // Routed through the same mutex as SAVE_WORD/DELETE_WORD/REVIEW_GRADE:
+  // those handlers do their storage read-modify-write inside serialized()
+  // too, so without this, a write already in flight when sign-out starts
+  // could still land its savedWords/reviewMeta write AFTER this clear runs
+  // — resurrecting the old account's mirror right after we wiped it. Going
+  // through the mutex makes this clear run after every mutation already
+  // queued ahead of it, closing that specific race (a SAVE_WORD queued
+  // AFTER sign-out is a separate, narrower case: it re-checks me.signedIn,
+  // and `me` was just cleared, so it refetches and sees signed-out before
+  // writing). The scheduled flush is cancelled inside the same block so a
+  // debounced flush armed by that same in-flight write can't fire
+  // afterward and repost the old account's pendingWordOps.
   // Ops queued in the last <1.5s before sign-out are lost; that's the
   // accepted tradeoff against cross-account contamination.
   // wordDetails/translations are per-page caches, not account data, so
   // they're kept.
-  await chrome.storage.local.remove([
-    'savedWords',
-    'reviewMeta',
-    'pendingWordOps',
-    'me'
-  ]);
+  await serialized(async () => {
+    clearTimeout(flushTimer);
+    await chrome.storage.local.remove([
+      'savedWords',
+      'reviewMeta',
+      'pendingWordOps',
+      'me'
+    ]);
+  });
   await notifyPlanChanged();
   return { ok: true };
 }
@@ -292,12 +307,17 @@ async function flushOps() {
     if (grades.length) {
       const res = await proxyPost('/v1/words/review', { grades }, token);
       if (res?.error) throw new Error(res.error);
-      // notSaved words are a definitive answer (word no longer exists
-      // server-side), not a retryable failure — treat them as acked too so
-      // they don't loop-requeue forever.
+      // notSaved is only a definitive "word doesn't exist" answer if there
+      // is no save op for that word still outstanding in `remaining` (e.g.
+      // requeued past the save endpoint's 100-word slice). If the save
+      // just hasn't landed yet, notSaved here is a race, not a fact — keep
+      // the review op queued so it retries once the save actually lands.
+      const pendingSaveWords = new Set(
+        remaining.filter((o) => o.op === 'save').map((o) => o.word)
+      );
       const acked = new Set([
         ...(res?.results || []).map((r) => r.word),
-        ...(res?.notSaved || [])
+        ...(res?.notSaved || []).filter((w) => !pendingSaveWords.has(w))
       ]);
       remaining = remaining.filter(
         (o) => o.op !== 'review' || !acked.has(o.word)
@@ -498,7 +518,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const word = String(message.word || '')
         .trim()
-        .toLowerCase();
+        .toLowerCase()
+        .slice(0, 60);
       // Storage mutation is serialized by itself; enqueueOp below serializes
       // its own queue write separately, once this has already resolved —
       // nesting the two would await on its own completion and hang.
@@ -547,7 +568,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const word = String(message.word || '')
         .trim()
-        .toLowerCase();
+        .toLowerCase()
+        .slice(0, 60);
       const result = await serialized(async () => {
         const me = await getMeCached();
         if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
@@ -576,7 +598,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const word = String(message.word || '')
         .trim()
-        .toLowerCase();
+        .toLowerCase()
+        .slice(0, 60);
       const result = await serialized(async () => {
         const BOX_MS = { 1: 86400000, 2: 259200000, 3: 604800000 }; // lib.js와 동일 값
         const { reviewMeta = {} } = await localGet('reviewMeta');
@@ -841,10 +864,15 @@ async function fetchWordDetail(word, context) {
 
     // If this word is already saved, the server's copy may predate this
     // detail (or have none) — push it up so the server matches what's
-    // shown locally (spec: 없는 단어는 재조회 뒤 업로드).
+    // shown locally (spec: 없는 단어는 재조회 뒤 업로드). Normalized the same
+    // way as SAVE_WORD/DELETE_WORD/REVIEW_GRADE and the server's own
+    // slice(0,60) — otherwise a >60-char word's enqueued op would never
+    // match the server's truncated echo in flushOps' ack sets and would
+    // requeue forever.
     const normalized = String(word || '')
       .trim()
-      .toLowerCase();
+      .toLowerCase()
+      .slice(0, 60);
     const { savedWords: sw = {} } = await localGet('savedWords');
     if (Object.prototype.hasOwnProperty.call(sw, normalized)) {
       const { translations: tr = {} } = await localGet('translations');
