@@ -275,23 +275,6 @@
     <div class="container">
       <h1>Settings</h1>
 
-      <!-- Access Mode -->
-      <h2>Mode</h2>
-      <div class="hint">
-        Pro mode needs no API key. Sign in with Google and subscribe, and word
-        details run through our servers.
-      </div>
-      <div class="mode-group">
-        <label class="mode-option selected" data-mode="pro">
-          <input type="radio" name="accessMode" value="pro" checked />
-          <span class="mode-pro-badge">Pro</span> Subscription
-        </label>
-        <label class="mode-option" data-mode="own">
-          <input type="radio" name="accessMode" value="own" />
-          Use Own API Key
-        </label>
-      </div>
-
       <!-- Pro mode section -->
       <div id="pro-section">
         <div id="plan-box">
@@ -304,12 +287,9 @@
              inside subscribing, not a competing button. -->
         <button id="upgrade-btn" class="primary-btn">Pro 구독하기</button>
         <div id="upgrade-hint" class="btn-hint">
-          Google 계정으로 로그인한 뒤 결제가 진행됩니다
+          $3 한 번 결제로 저장 무제한·복습·내보내기가 열립니다. AI 사용료는
+          본인 API 키로 별도 청구됩니다.
         </div>
-
-        <button id="portal-btn" class="secondary-btn hidden">
-          구독 관리 &middot; 결제수단 변경
-        </button>
 
         <div id="account-links">
           <a href="#" id="signin-link">Google 로그인</a>
@@ -319,8 +299,8 @@
         </div>
       </div>
 
-      <!-- Own Key sections (hidden when Pro) -->
-      <div id="own-key-sections" class="hidden">
+      <!-- Own Key sections -->
+      <div id="own-key-sections">
         <!-- AI Provider -->
         <h2>AI Provider</h2>
         <div class="hint">
@@ -328,12 +308,12 @@
           Basic translations always use Google Translate.
         </div>
         <div class="provider-group">
-          <label class="provider-option selected" data-provider="claude">
-            <input type="radio" name="provider" value="claude" checked />
+          <label class="provider-option" data-provider="claude">
+            <input type="radio" name="provider" value="claude" />
             Claude
           </label>
-          <label class="provider-option" data-provider="gemini">
-            <input type="radio" name="provider" value="gemini" />
+          <label class="provider-option selected" data-provider="gemini">
+            <input type="radio" name="provider" value="gemini" checked />
             Gemini
           </label>
           <label class="provider-option" data-provider="openai">
@@ -343,7 +323,7 @@
         </div>
 
         <!-- Claude section -->
-        <div class="key-section visible" id="claude-section">
+        <div class="key-section" id="claude-section">
           <h2>Claude</h2>
           <label for="claude-key-input">API Key</label>
           <input
@@ -363,7 +343,7 @@
         </div>
 
         <!-- Gemini section -->
-        <div class="key-section" id="gemini-section">
+        <div class="key-section visible" id="gemini-section">
           <h2>Gemini</h2>
           <label for="gemini-key-input">API Key</label>
           <input type="password" id="gemini-key-input" placeholder="AIza..." />

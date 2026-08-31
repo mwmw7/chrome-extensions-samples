@@ -10,18 +10,13 @@ const refreshLink = document.getElementById('refresh-link');
 const upgradeHint = document.getElementById('upgrade-hint');
 const planAccountEl = document.getElementById('plan-account');
 const upgradeBtn = document.getElementById('upgrade-btn');
-const portalBtn = document.getElementById('portal-btn');
 const planTierEl = document.getElementById('plan-tier');
-const planUsageEl = document.getElementById('plan-usage');
 const saveBtn = document.getElementById('save-btn');
 const statusEl = document.getElementById('status');
 const providerOptions = document.querySelectorAll('.provider-option');
 const claudeSection = document.getElementById('claude-section');
 const geminiSection = document.getElementById('gemini-section');
 const openaiSection = document.getElementById('openai-section');
-const modeOptions = document.querySelectorAll('.mode-option');
-const proSection = document.getElementById('pro-section');
-const ownKeySections = document.getElementById('own-key-sections');
 
 // Load saved settings
 chrome.storage.sync.get(
@@ -32,42 +27,18 @@ chrome.storage.sync.get(
     'aiProvider',
     'geminiModel',
     'claudeModel',
-    'openaiModel',
-    'accessMode'
+    'openaiModel'
   ],
   (data) => {
     if (data.apiKey) claudeKeyInput.value = data.apiKey;
     if (data.geminiKey) geminiKeyInput.value = data.geminiKey;
     if (data.openaiKey) openaiKeyInput.value = data.openaiKey;
-    if (data.aiProvider) selectProvider(data.aiProvider);
+    selectProvider(data.aiProvider || 'gemini');
     if (data.claudeModel) claudeModelSelect.value = data.claudeModel;
     if (data.geminiModel) geminiModelSelect.value = data.geminiModel;
     if (data.openaiModel) openaiModelSelect.value = data.openaiModel;
-    selectMode(data.accessMode || 'pro');
   }
 );
-
-// Mode toggle
-modeOptions.forEach((opt) => {
-  opt.addEventListener('click', () => {
-    selectMode(opt.dataset.mode);
-  });
-});
-
-function selectMode(mode) {
-  modeOptions.forEach((o) => {
-    const isSelected = o.dataset.mode === mode;
-    o.classList.toggle('selected', isSelected);
-    o.querySelector('input').checked = isSelected;
-  });
-  if (mode === 'pro') {
-    proSection.classList.remove('hidden');
-    ownKeySections.classList.add('hidden');
-  } else {
-    proSection.classList.add('hidden');
-    ownKeySections.classList.remove('hidden');
-  }
-}
 
 // Provider toggle
 providerOptions.forEach((opt) => {
@@ -89,18 +60,6 @@ function selectProvider(provider) {
 
 // Save
 saveBtn.addEventListener('click', () => {
-  const accessMode = document.querySelector(
-    'input[name="accessMode"]:checked'
-  ).value;
-  if (accessMode === 'pro') {
-    chrome.storage.sync.set({ accessMode }, () => {
-      showStatus('저장되었습니다.', false);
-      refreshPlan();
-    });
-    return;
-  }
-
-  // Own key mode
   const provider = document.querySelector(
     'input[name="provider"]:checked'
   ).value;
@@ -126,7 +85,6 @@ saveBtn.addEventListener('click', () => {
 
   chrome.storage.sync.set(
     {
-      accessMode,
       apiKey: claudeKey,
       claudeModel,
       geminiKey,
@@ -165,25 +123,7 @@ function applyMe(res) {
     ? res.email || '로그인됨'
     : '로그인되지 않음';
 
-  if (res && typeof res.remaining === 'number') {
-    planUsageEl.textContent = isPro
-      ? `이번 결제 주기 ${res.remaining}/${res.limit}회 남음`
-      : `오늘 ${res.remaining}/${res.limit}회 남음`;
-  } else {
-    planUsageEl.textContent = '사용량을 불러오지 못했습니다.';
-  }
-
-  if (isPro && res.cancelAtPeriodEnd && res.periodEnd) {
-    const d = new Date(res.periodEnd).toLocaleDateString('ko-KR');
-    planUsageEl.textContent += ` · ${d} 해지 예정`;
-  }
-  if (res && res.status === 'past_due') {
-    planUsageEl.textContent += ' · 결제 실패 — 결제수단을 확인하세요';
-  }
-
-  // One primary action at a time: subscribe, or manage an existing sub.
   upgradeBtn.classList.toggle('hidden', isPro);
-  portalBtn.classList.toggle('hidden', !isPro);
 
   // The hint only matters while signing in is still part of the flow.
   upgradeHint.classList.toggle('hidden', isPro || signedIn);
@@ -195,6 +135,12 @@ function applyMe(res) {
 function refreshPlan() {
   chrome.runtime.sendMessage({ type: 'GET_ME' }, applyMe);
 }
+
+// The side panel can sign in too, and this page would otherwise keep showing
+// "로그인되지 않음" until reopened. Same stamp the panel watches.
+chrome.storage.local.onChanged.addListener((changes) => {
+  if (changes.planChangedAt) refreshPlan();
+});
 
 const NO_BROWSER_SIGNIN =
   'Chrome 브라우저 로그인이 꺼져 있어 Google 로그인을 할 수 없습니다. ' +
@@ -269,12 +215,6 @@ upgradeBtn.addEventListener('click', () => {
       true
     );
     refreshPlan();
-  });
-});
-
-portalBtn.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'OPEN_PORTAL' }, (res) => {
-    if (!res || !res.url) showStatus('관리 페이지를 열지 못했습니다.', true);
   });
 });
 

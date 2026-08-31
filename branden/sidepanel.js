@@ -9,7 +9,6 @@ const listView = document.getElementById('list-view');
 const reviewView = document.getElementById('review-view');
 const phraseView = document.getElementById('phrase-view');
 const aiBadge = document.getElementById('ai-badge');
-const quotaEl = document.getElementById('quota-badge');
 const exportBtn = document.getElementById('export-btn');
 
 let allWords = [];
@@ -21,8 +20,7 @@ let wordDetails = {};
 let wordContexts = {}; // { word: "sentence from page" }
 let pageText = ''; // truncated page content for phrase lookups
 let savedWords = {}; // { word: timestamp }
-let aiProvider = 'claude';
-let accessMode = 'pro';
+let aiProvider = 'gemini';
 let openWord = null;
 let currentTab = 'all'; // 'all' | 'saved' | 'review'
 let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 'toefl'
@@ -33,7 +31,6 @@ let reviewIndex = 0;
 
 // --- On panel open: extract words from current tab immediately ---
 chrome.runtime.sendMessage({ type: 'PANEL_OPENED' });
-updateQuotaBadge();
 
 // Retry if no words arrived (handles late panel open after page load)
 setTimeout(() => {
@@ -95,10 +92,9 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
 });
 
 // --- Load data ---
-chrome.storage.sync.get(['savedWords', 'aiProvider', 'accessMode'], (data) => {
+chrome.storage.sync.get(['savedWords', 'aiProvider'], (data) => {
   savedWords = data.savedWords || {};
-  aiProvider = data.aiProvider || 'claude';
-  accessMode = data.accessMode || 'pro';
+  aiProvider = data.aiProvider || 'gemini';
   updateSavedCount();
   updateAiBadge();
 });
@@ -162,11 +158,7 @@ chrome.storage.sync.onChanged.addListener((changes) => {
     if (currentTab !== 'review') render();
   }
   if (changes.aiProvider) {
-    aiProvider = changes.aiProvider.newValue || 'claude';
-    updateAiBadge();
-  }
-  if (changes.accessMode) {
-    accessMode = changes.accessMode.newValue || 'pro';
+    aiProvider = changes.aiProvider.newValue || 'gemini';
     updateAiBadge();
   }
 });
@@ -236,36 +228,17 @@ function entitlementErrorHtml(resp) {
 // Delegated: the button is rendered inside dynamically-built cards.
 document.addEventListener('click', (e) => {
   if (e.target.classList.contains('upgrade-inline')) {
-    chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, updateQuotaBadge);
+    chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, () => {});
   }
   if (e.target.classList.contains('signin-inline')) {
-    chrome.runtime.sendMessage({ type: 'SIGN_IN' }, updateQuotaBadge);
+    chrome.runtime.sendMessage({ type: 'SIGN_IN' }, () => {});
   }
 });
 
-function updateQuotaBadge() {
-  chrome.runtime.sendMessage({ type: 'GET_ME' }, (res) => {
-    if (!res || res.error || typeof res.remaining !== 'number') return;
-    quotaEl.textContent =
-      res.tier === 'pro' ? `${res.remaining}` : `무료 ${res.remaining}`;
-    quotaEl.title =
-      res.tier === 'pro'
-        ? `이번 결제 주기 ${res.remaining}/${res.limit}회 남음`
-        : `오늘 ${res.remaining}/${res.limit}회 남음`;
-    quotaEl.classList.toggle('quota-low', res.remaining <= 2);
-  });
-}
-
 function updateAiBadge() {
-  quotaEl.classList.toggle('hidden', accessMode !== 'pro');
-  if (accessMode === 'pro') {
-    aiBadge.textContent = 'Pro';
-    aiBadge.className = 'ai-badge-pro';
-  } else {
-    const badgeNames = { claude: 'Claude', gemini: 'Gemini', openai: 'OpenAI' };
-    aiBadge.textContent = badgeNames[aiProvider] || aiProvider;
-    aiBadge.className = 'ai-badge-' + aiProvider;
-  }
+  const badgeNames = { claude: 'Claude', gemini: 'Gemini', openai: 'OpenAI' };
+  aiBadge.textContent = badgeNames[aiProvider] || aiProvider;
+  aiBadge.className = 'ai-badge-' + aiProvider;
 }
 
 // =====================
@@ -416,7 +389,6 @@ function render() {
               if (el) el.innerHTML = entitlementErrorHtml(resp);
               return;
             }
-            if (resp && resp.quota) updateQuotaBadge();
             if (resp && resp.detail) {
               wordDetails[word] = resp.detail;
               if (openWord === word) render();
@@ -681,7 +653,6 @@ function submitPhrase() {
           ${entitlementErrorHtml(resp)}`;
         return;
       }
-      if (resp && resp.quota) updateQuotaBadge();
       if (resp && resp.detail) {
         renderPhraseCard(card, phrase, resp.detail);
       }

@@ -5,16 +5,12 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((err) => console.error(err));
 
-const PROXY_BASE = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
+chrome.runtime.onInstalled.addListener(() => {
+  // v1 stored an accessMode toggle; the proxy it selected no longer exists.
+  chrome.storage.sync.remove('accessMode');
+});
 
-// Anonymous id used only to meter the signed-out free tier.
-async function getDeviceId() {
-  const { deviceId } = await chrome.storage.local.get('deviceId');
-  if (deviceId) return deviceId;
-  const id = crypto.randomUUID();
-  await chrome.storage.local.set({ deviceId: id });
-  return id;
-}
+const PROXY_BASE = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
 
 // --- Google sign-in ---------------------------------------
 
@@ -69,6 +65,7 @@ async function signIn() {
     console.error('[auth] worker rejected the token', me);
     return { error: 'TOKEN_REJECTED', detail: JSON.stringify(me) };
   }
+  await notifyPlanChanged();
   return me;
 }
 
@@ -100,7 +97,19 @@ async function signOut() {
       { method: 'POST' }
     ).catch(() => {});
   }
+  await notifyPlanChanged();
   return { ok: true };
+}
+
+/**
+ * The side panel and the options page each cache the plan they last saw, and
+ * neither observes the other. Signing out in one left a stale "Pro" quota in
+ * the other until something unrelated forced a refresh. Stamp a key both
+ * already watch through storage.onChanged rather than adding a second
+ * messaging path alongside it.
+ */
+async function notifyPlanChanged() {
+  await chrome.storage.local.set({ planChangedAt: Date.now() });
 }
 
 const memoryCache = new Map();
@@ -196,10 +205,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'OPEN_CHECKOUT') {
     openCheckout().then(sendResponse);
-    return true;
-  }
-  if (message.type === 'OPEN_PORTAL') {
-    openPortal().then(sendResponse);
     return true;
   }
 });
@@ -361,33 +366,20 @@ const SETTING_KEYS = [
   'aiProvider',
   'geminiModel',
   'claudeModel',
-  'openaiModel',
-  'accessMode'
+  'openaiModel'
 ];
 
-/**
- * Resolves which backend to use. Pro mode WITHOUT a license key is the free
- * tier, not an error — a new user has to be able to try the feature before
- * being asked to pay.
- */
+/** Resolves which own-key backend to use for word/phrase lookups. */
 async function resolveBackend() {
   const settings = await chrome.storage.sync.get(SETTING_KEYS);
-  const accessMode = settings.accessMode || 'pro';
-
-  if (accessMode === 'pro') {
-    return { mode: 'pro', provider: 'pro', settings };
-  }
-
-  const provider = settings.aiProvider || 'claude';
+  const provider = settings.aiProvider || 'gemini';
   const keyMap = {
     claude: settings.apiKey,
     gemini: settings.geminiKey,
     openai: settings.openaiKey
   };
-  if (!keyMap[provider]) {
-    return { error: 'NO_API_KEY', provider };
-  }
-  return { mode: 'own', provider, settings };
+  if (!keyMap[provider]) return { error: 'NO_API_KEY', provider };
+  return { provider, settings };
 }
 
 // --- On-demand word detail ----------------------------------
@@ -395,7 +387,7 @@ async function resolveBackend() {
 async function fetchWordDetail(word, context) {
   const backend = await resolveBackend();
   if (backend.error) return backend;
-  const { mode, provider, settings } = backend;
+  const { provider, settings } = backend;
 
   // Cache — re-fetch if the context changed (different page/sentence)
   const stored = await chrome.storage.local.get('wordDetails');
@@ -409,27 +401,17 @@ async function fetchWordDetail(word, context) {
   }
 
   try {
-    let detail;
-    let quota = null;
-
-    if (mode === 'pro') {
-      const res = await callProxy({ type: 'word', word, context });
-      detail = res.detail;
-      quota = {
-        tier: res.tier,
-        signedIn: res.signedIn,
-        remaining: res.remaining,
-        resetAt: res.resetAt
-      };
-    } else {
-      detail = await callOwnKey(WORD_PROMPT(word, context), provider, settings);
-    }
+    const detail = await callOwnKey(
+      WORD_PROMPT(word, context),
+      provider,
+      settings
+    );
 
     const s = await chrome.storage.local.get('wordDetails');
     const merged = { ...(s.wordDetails || {}), [word]: detail };
     await chrome.storage.local.set({ wordDetails: merged });
 
-    return { detail, provider, quota };
+    return { detail, provider };
   } catch (err) {
     return { error: err.message, provider };
   }
@@ -440,68 +422,22 @@ async function fetchWordDetail(word, context) {
 async function fetchPhraseDetail(phrase, pageText) {
   const backend = await resolveBackend();
   if (backend.error) return backend;
-  const { mode, provider, settings } = backend;
+  const { provider, settings } = backend;
 
   try {
-    let detail;
-    let quota = null;
+    const detail = await callOwnKey(
+      PHRASE_PROMPT(phrase, pageText),
+      provider,
+      settings
+    );
 
-    if (mode === 'pro') {
-      const res = await callProxy({ type: 'phrase', phrase, pageText });
-      detail = res.detail;
-      quota = {
-        tier: res.tier,
-        signedIn: res.signedIn,
-        remaining: res.remaining,
-        resetAt: res.resetAt
-      };
-    } else {
-      detail = await callOwnKey(
-        PHRASE_PROMPT(phrase, pageText),
-        provider,
-        settings
-      );
-    }
-
-    return { detail, provider, quota };
+    return { detail, provider };
   } catch (err) {
     return { error: err.message, provider };
   }
 }
 
-// --- Proxy (Pro + free tier) --------------------------------
-
-/**
- * The proxy takes structured intent, not a prompt string: prompts now live
- * server-side so a leaked license cannot be used as a general Claude proxy,
- * and prompt fixes ship without a Web Store review.
- */
-async function callProxy(payload) {
-  const deviceId = await getDeviceId();
-  const token = await getCachedGoogleToken();
-
-  const response = await fetch(`${PROXY_BASE}/v1/complete`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-device-id': deviceId,
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const err = new Error(data.error || `HTTP ${response.status}`);
-    err.code = data.error;
-    err.resetAt = data.resetAt;
-    err.limit = data.limit;
-    throw err;
-  }
-
-  return data;
-}
+// --- Worker API (license + word list) ------------------------
 
 async function proxyPost(path, body, tokenOverride) {
   const token = tokenOverride ?? (await getCachedGoogleToken());
@@ -517,7 +453,7 @@ async function proxyPost(path, body, tokenOverride) {
 }
 
 async function getMe() {
-  return proxyPost('/v1/me', { deviceId: await getDeviceId() });
+  return proxyPost('/v1/me', {}, await getCachedGoogleToken());
 }
 
 async function openCheckout() {
@@ -533,12 +469,6 @@ async function openCheckout() {
   }
 
   const result = await proxyPost('/v1/checkout', {}, token);
-  if (result.url) chrome.tabs.create({ url: result.url });
-  return result;
-}
-
-async function openPortal() {
-  const result = await proxyPost('/v1/portal', {});
   if (result.url) chrome.tabs.create({ url: result.url });
   return result;
 }
