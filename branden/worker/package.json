@@ -2,6 +2,9 @@
   "name": "eng-ko-translator-proxy",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "stripe": "^17.5.0"
   },
