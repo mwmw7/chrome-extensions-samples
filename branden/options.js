@@ -9,6 +9,7 @@ const signoutLink = document.getElementById('signout-link');
 const refreshLink = document.getElementById('refresh-link');
 const upgradeHint = document.getElementById('upgrade-hint');
 const planAccountEl = document.getElementById('plan-account');
+const planUsageEl = document.getElementById('plan-usage');
 const upgradeBtn = document.getElementById('upgrade-btn');
 const planTierEl = document.getElementById('plan-tier');
 const saveBtn = document.getElementById('save-btn');
@@ -109,31 +110,35 @@ function showStatus(msg, isError) {
   statusEl.textContent = msg;
 }
 
-
 // =====================
 //  Plan & billing
 // =====================
 
-function applyMe(res) {
-  const signedIn = !!(res && res.signedIn);
-  const isPro = !!(res && res.tier === 'pro');
+function applyMe(me) {
+  const signedIn = !!me?.signedIn;
+  const paid = !!me?.paid;
 
-  planTierEl.textContent = isPro ? 'Pro' : 'Free';
+  planTierEl.textContent = paid ? 'Pro (영구)' : '무료';
   planAccountEl.textContent = signedIn
-    ? res.email || '로그인됨'
+    ? me.email || '로그인됨'
     : '로그인되지 않음';
+  planUsageEl.textContent = signedIn
+    ? paid
+      ? `저장한 단어 ${me.wordCount}개`
+      : `저장한 단어 ${me.wordCount}/${me.limit}개`
+    : '저장·복습·내보내기는 로그인이 필요합니다';
 
-  upgradeBtn.classList.toggle('hidden', isPro);
+  upgradeBtn.classList.toggle('hidden', paid);
 
-  // The hint only matters while signing in is still part of the flow.
-  upgradeHint.classList.toggle('hidden', isPro || signedIn);
+  // The hint only matters while the unlock button is still visible.
+  upgradeHint.classList.toggle('hidden', paid);
 
   signinLink.classList.toggle('hidden', signedIn);
   signoutLink.classList.toggle('hidden', !signedIn);
 }
 
 function refreshPlan() {
-  chrome.runtime.sendMessage({ type: 'GET_ME' }, applyMe);
+  chrome.runtime.sendMessage({ type: 'GET_ME', refresh: true }, applyMe);
 }
 
 // The side panel can sign in too, and this page would otherwise keep showing
@@ -176,6 +181,19 @@ signinLink.addEventListener('click', (e) => {
     }
     applyMe(res);
     showStatus('로그인되었습니다.', false);
+
+    // Fire-and-forget: pulls any legacy chrome.storage.sync word list up to
+    // the server so signing in never looks like it dropped what the user
+    // already saved.
+    chrome.runtime.sendMessage({ type: 'SYNC_WORDS' }, (syncRes) => {
+      if (syncRes?.error === 'MIGRATION_FAILED') {
+        showStatus(
+          '이전 단어 이관에 실패했습니다. 새로고침을 눌러 다시 시도하세요.',
+          true
+        );
+      }
+      refreshPlan();
+    });
   });
 });
 
@@ -192,21 +210,20 @@ refreshLink.addEventListener('click', (e) => {
   refreshPlan();
 });
 
-// Subscribing drives sign-in itself, so the user never has to think about
-// the order — one button, one flow.
+// Unlocking drives sign-in itself, so the user never has to think about the
+// order — one button, one flow.
 upgradeBtn.addEventListener('click', () => {
   upgradeBtn.disabled = true;
   upgradeBtn.textContent = '결제 페이지 여는 중...';
   chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, (res) => {
     upgradeBtn.disabled = false;
-    upgradeBtn.textContent = 'Pro 구독하기';
+    upgradeBtn.textContent = '$3로 영구 잠금 해제';
     if (res && res.url) {
       showStatus('새 탭에서 결제를 완료한 뒤 새로고침하세요.', false);
       return;
     }
     const messages = {
-      SIGN_IN_REQUIRED: '로그인이 필요합니다.',
-      ALREADY_SUBSCRIBED: '이미 구독 중입니다.'
+      ALREADY_PAID: '이미 구매하셨습니다. 새로고침을 눌러 상태를 갱신하세요.'
     };
     showStatus(
       res && res.error === 'SIGN_IN_FAILED'
