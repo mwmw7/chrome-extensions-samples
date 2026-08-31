@@ -123,6 +123,20 @@ async function notifyPlanChanged() {
 let flushTimer = null;
 const FLUSH_DELAY_MS = 1500;
 
+// Serializes storage.local read-modify-write sequences that would otherwise
+// race across await gaps when handlers interleave (e.g. two SAVE_WORD calls
+// both reading savedWords before either writes it back). Callers must not
+// call serialized() again from inside a function already running as one —
+// the chain would await its own completion and hang. Each handler below
+// calls it once for its own mutation, then (after that resolves) once more,
+// separately, for enqueueOp's queue write — sequential, not nested.
+let mutex = Promise.resolve();
+function serialized(fn) {
+  const p = mutex.then(fn, fn);
+  mutex = p.catch(() => {});
+  return p;
+}
+
 async function localGet(keys) {
   return chrome.storage.local.get(keys);
 }
@@ -145,9 +159,11 @@ async function getMeCached(refresh = false) {
 }
 
 async function enqueueOp(op) {
-  const { pendingWordOps = [] } = await localGet('pendingWordOps');
-  pendingWordOps.push(op);
-  await chrome.storage.local.set({ pendingWordOps });
+  await serialized(async () => {
+    const { pendingWordOps = [] } = await localGet('pendingWordOps');
+    pendingWordOps.push(op);
+    await chrome.storage.local.set({ pendingWordOps });
+  });
   clearTimeout(flushTimer);
   flushTimer = setTimeout(() => flushOps().catch(console.error), FLUSH_DELAY_MS);
 }
@@ -164,17 +180,32 @@ async function flushOps() {
   const dels = pendingWordOps.filter((o) => o.op === 'delete').map((o) => o.word);
   const grades = pendingWordOps.filter((o) => o.op === 'review');
 
+  // Ops not yet confirmed successful. Trimmed as each step succeeds so a
+  // later failure — network OR a non-2xx JSON error body, since proxyPost
+  // only throws on network failure — only requeues what's still outstanding
+  // (spec: save 실패 시 클라이언트 큐에 남겨 재시도). Any failure throws (instead
+  // of returning) so syncWords' caller sees it too, rather than silently
+  // proceeding to overwrite the local mirror with a server list that's
+  // still missing these ops.
+  let remaining = [...pendingWordOps];
+
   try {
     if (saves.length) {
       const res = await proxyPost('/v1/words/save', {
-        words: saves.map(({ word, ko, detail }) => ({ word, ko, detail })),
-        migrate: saves.some((s) => s.migrate) || undefined
+        words: saves.map(({ word, ko, detail }) => ({ word, ko, detail }))
       }, token);
+      if (res.error) throw new Error(res.error);
       if (res.rejected?.length) {
-        const { savedWords = {} } = await localGet('savedWords');
-        for (const w of res.rejected) delete savedWords[w];
+        // A definitive answer (limit reached), not a retryable failure —
+        // revert the optimistic mirror instead of requeuing it.
+        const { savedWords = {}, reviewMeta = {} } = await localGet(['savedWords', 'reviewMeta']);
+        for (const w of res.rejected) {
+          delete savedWords[w];
+          delete reviewMeta[w];
+        }
         await chrome.storage.local.set({
           savedWords,
+          reviewMeta,
           limitNotice: { rejected: res.rejected, at: Date.now() }
         });
       }
@@ -182,15 +213,23 @@ async function flushOps() {
         const me = await getMeCached();
         await chrome.storage.local.set({ me: { ...me, wordCount: res.wordCount } });
       }
+      remaining = remaining.filter((o) => o.op !== 'save');
     }
-    if (dels.length) await proxyPost('/v1/words/delete', { words: dels }, token);
+    if (dels.length) {
+      const res = await proxyPost('/v1/words/delete', { words: dels }, token);
+      if (res?.error) throw new Error(res.error);
+      remaining = remaining.filter((o) => o.op !== 'delete');
+    }
     for (const g of grades) {
-      await proxyPost('/v1/words/review', { word: g.word, grade: g.grade }, token);
+      const res = await proxyPost('/v1/words/review', { word: g.word, grade: g.grade }, token);
+      if (res?.error) throw new Error(res.error);
+      remaining = remaining.filter((o) => o !== g);
     }
   } catch (err) {
-    // Network failure: put everything back for the next flush.
+    // Network failure, or a non-2xx JSON error body thrown above: put
+    // everything not-yet-succeeded back for the next flush.
     const { pendingWordOps: cur = [] } = await localGet('pendingWordOps');
-    await chrome.storage.local.set({ pendingWordOps: [...pendingWordOps, ...cur] });
+    await chrome.storage.local.set({ pendingWordOps: [...remaining, ...cur] });
     throw err;
   }
 }
@@ -199,7 +238,14 @@ async function syncWords() {
   const token = await getCachedGoogleToken();
   if (!token) return { error: 'SIGN_IN_REQUIRED' };
 
-  await migrateLegacySaved(token);
+  try {
+    await migrateLegacySaved(token);
+  } catch (err) {
+    // Migration must never look like success: abort without touching the
+    // legacy copy so a retry can pick up where this left off
+    // (spec: 사용자가 모은 것을 버리지 않는다).
+    return { error: 'MIGRATION_FAILED', detail: String(err?.message || err) };
+  }
   await flushOps();
 
   const res = await proxyPost('/v1/words/list', {}, token);
@@ -220,7 +266,11 @@ async function syncWords() {
 
 // One-time import of the v1 chrome.storage.sync word list. Uploads
 // EVERYTHING (migrate flag lifts the free limit — never drop a user's
-// collection), then clears the old key so this can't run twice.
+// collection), then clears the old key so this can't run twice. A failed
+// batch aborts immediately, before the legacy copy is touched or the
+// migrated flag is set, so a retry starts from the full untouched list
+// instead of silently losing whatever didn't make it up
+// (spec: 사용자가 모은 것을 버리지 않는다).
 async function migrateLegacySaved(token) {
   const { wordsMigrated } = await localGet('wordsMigrated');
   if (wordsMigrated) return;
@@ -235,7 +285,10 @@ async function migrateLegacySaved(token) {
         ko: translations[word] || null,
         detail: wordDetails[word] || null
       }));
-      await proxyPost('/v1/words/save', { words: batch, migrate: true }, token);
+      const res = await proxyPost('/v1/words/save', { words: batch, migrate: true }, token);
+      if (res.error || !Array.isArray(res.saved)) {
+        throw new Error(res.error || 'legacy word migration failed: unexpected response');
+      }
     }
     await chrome.storage.sync.remove('savedWords');
   }
@@ -325,19 +378,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'SAVE_WORD') {
     (async () => {
-      const me = await getMeCached();
-      if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
-      const { savedWords = {} } = await localGet('savedWords');
-      if (!savedWords[message.word] && Object.keys(savedWords).length >= me.limit) {
-        return { error: 'LIMIT_REACHED', wordCount: Object.keys(savedWords).length, limit: me.limit };
+      const word = String(message.word || '').trim().toLowerCase();
+      // Storage mutation is serialized by itself; enqueueOp below serializes
+      // its own queue write separately, once this has already resolved —
+      // nesting the two would await on its own completion and hang.
+      const result = await serialized(async () => {
+        const me = await getMeCached();
+        if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
+        const { savedWords = {} } = await localGet('savedWords');
+        if (!savedWords[word] && Object.keys(savedWords).length >= me.limit) {
+          return { error: 'LIMIT_REACHED', wordCount: Object.keys(savedWords).length, limit: me.limit };
+        }
+        const now = Date.now();
+        savedWords[word] = now;
+        const { reviewMeta = {} } = await localGet('reviewMeta');
+        if (!reviewMeta[word]) reviewMeta[word] = { box: 1, nextDue: now };
+        await chrome.storage.local.set({ savedWords, reviewMeta });
+        return { ok: true };
+      });
+      if (result.ok) {
+        await enqueueOp({ op: 'save', word, ko: message.ko, detail: message.detail });
       }
-      const now = Date.now();
-      savedWords[message.word] = now;
-      const { reviewMeta = {} } = await localGet('reviewMeta');
-      if (!reviewMeta[message.word]) reviewMeta[message.word] = { box: 1, nextDue: now };
-      await chrome.storage.local.set({ savedWords, reviewMeta });
-      await enqueueOp({ op: 'save', word: message.word, ko: message.ko, detail: message.detail });
-      return { ok: true };
+      return result;
     })().then(sendResponse, (err) =>
       sendResponse({ error: 'SAVE_FAILED', detail: String(err?.message || err) })
     );
@@ -345,14 +407,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'DELETE_WORD') {
     (async () => {
-      const me = await getMeCached();
-      if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
-      const { savedWords = {}, reviewMeta = {} } = await localGet(['savedWords', 'reviewMeta']);
-      delete savedWords[message.word];
-      delete reviewMeta[message.word];
-      await chrome.storage.local.set({ savedWords, reviewMeta });
-      await enqueueOp({ op: 'delete', word: message.word });
-      return { ok: true };
+      const word = String(message.word || '').trim().toLowerCase();
+      const result = await serialized(async () => {
+        const me = await getMeCached();
+        if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
+        const { savedWords = {}, reviewMeta = {} } = await localGet(['savedWords', 'reviewMeta']);
+        delete savedWords[word];
+        delete reviewMeta[word];
+        await chrome.storage.local.set({ savedWords, reviewMeta });
+        return { ok: true };
+      });
+      if (result.ok) {
+        await enqueueOp({ op: 'delete', word });
+      }
+      return result;
     })().then(sendResponse, (err) =>
       sendResponse({ error: 'DELETE_FAILED', detail: String(err?.message || err) })
     );
@@ -360,15 +428,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'REVIEW_GRADE') {
     (async () => {
-      const BOX_MS = { 1: 86400000, 2: 259200000, 3: 604800000 }; // lib.js와 동일 값
-      const { reviewMeta = {} } = await localGet('reviewMeta');
-      const cur = reviewMeta[message.word] || { box: 1 };
-      const box = message.grade === 'good' ? Math.min((cur.box || 1) + 1, 3) : 1;
-      const nextDue = Date.now() + BOX_MS[box];
-      reviewMeta[message.word] = { box, nextDue };
-      await chrome.storage.local.set({ reviewMeta });
-      await enqueueOp({ op: 'review', word: message.word, grade: message.grade });
-      return { ok: true, box, nextDue };
+      const word = String(message.word || '').trim().toLowerCase();
+      const result = await serialized(async () => {
+        const BOX_MS = { 1: 86400000, 2: 259200000, 3: 604800000 }; // lib.js와 동일 값
+        const { reviewMeta = {} } = await localGet('reviewMeta');
+        const cur = reviewMeta[word] || { box: 1 };
+        const box = message.grade === 'good' ? Math.min((cur.box || 1) + 1, 3) : 1;
+        const nextDue = Date.now() + BOX_MS[box];
+        reviewMeta[word] = { box, nextDue };
+        await chrome.storage.local.set({ reviewMeta });
+        return { ok: true, box, nextDue };
+      });
+      if (result.ok) {
+        await enqueueOp({ op: 'review', word, grade: message.grade });
+      }
+      return result;
     })().then(sendResponse, (err) =>
       sendResponse({ error: 'REVIEW_FAILED', detail: String(err?.message || err) })
     );
