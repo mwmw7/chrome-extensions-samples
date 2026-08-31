@@ -65,6 +65,7 @@ async function signIn() {
     console.error('[auth] worker rejected the token', me);
     return { error: 'TOKEN_REJECTED', detail: JSON.stringify(me) };
   }
+  await chrome.storage.local.remove('me');
   await notifyPlanChanged();
   return me;
 }
@@ -97,6 +98,7 @@ async function signOut() {
       { method: 'POST' }
     ).catch(() => {});
   }
+  await chrome.storage.local.remove('me');
   await notifyPlanChanged();
   return { ok: true };
 }
@@ -110,6 +112,134 @@ async function signOut() {
  */
 async function notifyPlanChanged() {
   await chrome.storage.local.set({ planChangedAt: Date.now() });
+}
+
+// --- Word-list sync ----------------------------------------
+// The server owns the word list; storage.local holds a mirror so the panel
+// renders instantly and works offline. Writes are optimistic: mirror first,
+// queue the op, flush after a debounce (KV allows ~1 write/sec per key).
+// A rejected save (limit) reverts the mirror and posts a limitNotice.
+
+let flushTimer = null;
+const FLUSH_DELAY_MS = 1500;
+
+async function localGet(keys) {
+  return chrome.storage.local.get(keys);
+}
+
+async function getMeCached(refresh = false) {
+  const { me } = await localGet('me');
+  if (me && !refresh && Date.now() - (me.fetchedAt || 0) < 60_000) return me;
+  try {
+    const token = await getCachedGoogleToken();
+    const fresh = await proxyPost('/v1/me', {}, token);
+    const stamped = { ...fresh, fetchedAt: Date.now() };
+    await chrome.storage.local.set({ me: stamped });
+    return stamped;
+  } catch (err) {
+    // Server unreachable: trust the last known answer. A network blip must
+    // never lock a paying user out of their own word list (spec: 오류 처리).
+    if (me) return me;
+    return { signedIn: false, email: null, paid: false, wordCount: 0, limit: 200 };
+  }
+}
+
+async function enqueueOp(op) {
+  const { pendingWordOps = [] } = await localGet('pendingWordOps');
+  pendingWordOps.push(op);
+  await chrome.storage.local.set({ pendingWordOps });
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => flushOps().catch(console.error), FLUSH_DELAY_MS);
+}
+
+async function flushOps() {
+  const token = await getCachedGoogleToken();
+  if (!token) return; // stays queued until next sign-in/flush
+
+  const { pendingWordOps = [] } = await localGet('pendingWordOps');
+  if (!pendingWordOps.length) return;
+  await chrome.storage.local.set({ pendingWordOps: [] });
+
+  const saves = pendingWordOps.filter((o) => o.op === 'save');
+  const dels = pendingWordOps.filter((o) => o.op === 'delete').map((o) => o.word);
+  const grades = pendingWordOps.filter((o) => o.op === 'review');
+
+  try {
+    if (saves.length) {
+      const res = await proxyPost('/v1/words/save', {
+        words: saves.map(({ word, ko, detail }) => ({ word, ko, detail })),
+        migrate: saves.some((s) => s.migrate) || undefined
+      }, token);
+      if (res.rejected?.length) {
+        const { savedWords = {} } = await localGet('savedWords');
+        for (const w of res.rejected) delete savedWords[w];
+        await chrome.storage.local.set({
+          savedWords,
+          limitNotice: { rejected: res.rejected, at: Date.now() }
+        });
+      }
+      if (typeof res.wordCount === 'number') {
+        const me = await getMeCached();
+        await chrome.storage.local.set({ me: { ...me, wordCount: res.wordCount } });
+      }
+    }
+    if (dels.length) await proxyPost('/v1/words/delete', { words: dels }, token);
+    for (const g of grades) {
+      await proxyPost('/v1/words/review', { word: g.word, grade: g.grade }, token);
+    }
+  } catch (err) {
+    // Network failure: put everything back for the next flush.
+    const { pendingWordOps: cur = [] } = await localGet('pendingWordOps');
+    await chrome.storage.local.set({ pendingWordOps: [...pendingWordOps, ...cur] });
+    throw err;
+  }
+}
+
+async function syncWords() {
+  const token = await getCachedGoogleToken();
+  if (!token) return { error: 'SIGN_IN_REQUIRED' };
+
+  await migrateLegacySaved(token);
+  await flushOps();
+
+  const res = await proxyPost('/v1/words/list', {}, token);
+  if (res.error) return res;
+
+  const savedWords = {};
+  const reviewMeta = {};
+  const { wordDetails = {} } = await localGet('wordDetails');
+  for (const [word, entry] of Object.entries(res.words || {})) {
+    savedWords[word] = entry.savedAt;
+    reviewMeta[word] = { box: entry.box || 1, nextDue: entry.nextDue || 0 };
+    if (entry.detail && !wordDetails[word]) wordDetails[word] = entry.detail;
+  }
+  await chrome.storage.local.set({ savedWords, reviewMeta, wordDetails });
+  const me = await getMeCached(true);
+  return { ok: true, wordCount: me.wordCount };
+}
+
+// One-time import of the v1 chrome.storage.sync word list. Uploads
+// EVERYTHING (migrate flag lifts the free limit — never drop a user's
+// collection), then clears the old key so this can't run twice.
+async function migrateLegacySaved(token) {
+  const { wordsMigrated } = await localGet('wordsMigrated');
+  if (wordsMigrated) return;
+
+  const { savedWords: legacy = {} } = await chrome.storage.sync.get('savedWords');
+  const entries = Object.entries(legacy);
+  if (entries.length) {
+    const { wordDetails = {}, translations = {} } = await localGet(['wordDetails', 'translations']);
+    for (let i = 0; i < entries.length; i += 50) {
+      const batch = entries.slice(i, i + 50).map(([word]) => ({
+        word,
+        ko: translations[word] || null,
+        detail: wordDetails[word] || null
+      }));
+      await proxyPost('/v1/words/save', { words: batch, migrate: true }, token);
+    }
+    await chrome.storage.sync.remove('savedWords');
+  }
+  await chrome.storage.local.set({ wordsMigrated: true });
 }
 
 const memoryCache = new Map();
@@ -188,7 +318,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === 'GET_ME') {
-    getMe().then(sendResponse);
+    getMeCached(message.refresh).then(sendResponse, (err) =>
+      sendResponse({ error: 'GET_ME_FAILED', detail: String(err?.message || err) })
+    );
+    return true;
+  }
+  if (message.type === 'SAVE_WORD') {
+    (async () => {
+      const me = await getMeCached();
+      if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
+      const { savedWords = {} } = await localGet('savedWords');
+      if (!savedWords[message.word] && Object.keys(savedWords).length >= me.limit) {
+        return { error: 'LIMIT_REACHED', wordCount: Object.keys(savedWords).length, limit: me.limit };
+      }
+      const now = Date.now();
+      savedWords[message.word] = now;
+      const { reviewMeta = {} } = await localGet('reviewMeta');
+      if (!reviewMeta[message.word]) reviewMeta[message.word] = { box: 1, nextDue: now };
+      await chrome.storage.local.set({ savedWords, reviewMeta });
+      await enqueueOp({ op: 'save', word: message.word, ko: message.ko, detail: message.detail });
+      return { ok: true };
+    })().then(sendResponse, (err) =>
+      sendResponse({ error: 'SAVE_FAILED', detail: String(err?.message || err) })
+    );
+    return true;
+  }
+  if (message.type === 'DELETE_WORD') {
+    (async () => {
+      const me = await getMeCached();
+      if (!me.signedIn) return { error: 'SIGN_IN_REQUIRED' };
+      const { savedWords = {}, reviewMeta = {} } = await localGet(['savedWords', 'reviewMeta']);
+      delete savedWords[message.word];
+      delete reviewMeta[message.word];
+      await chrome.storage.local.set({ savedWords, reviewMeta });
+      await enqueueOp({ op: 'delete', word: message.word });
+      return { ok: true };
+    })().then(sendResponse, (err) =>
+      sendResponse({ error: 'DELETE_FAILED', detail: String(err?.message || err) })
+    );
+    return true;
+  }
+  if (message.type === 'REVIEW_GRADE') {
+    (async () => {
+      const BOX_MS = { 1: 86400000, 2: 259200000, 3: 604800000 }; // lib.js와 동일 값
+      const { reviewMeta = {} } = await localGet('reviewMeta');
+      const cur = reviewMeta[message.word] || { box: 1 };
+      const box = message.grade === 'good' ? Math.min((cur.box || 1) + 1, 3) : 1;
+      const nextDue = Date.now() + BOX_MS[box];
+      reviewMeta[message.word] = { box, nextDue };
+      await chrome.storage.local.set({ reviewMeta });
+      await enqueueOp({ op: 'review', word: message.word, grade: message.grade });
+      return { ok: true, box, nextDue };
+    })().then(sendResponse, (err) =>
+      sendResponse({ error: 'REVIEW_FAILED', detail: String(err?.message || err) })
+    );
+    return true;
+  }
+  if (message.type === 'SYNC_WORDS') {
+    syncWords().then(sendResponse, (err) =>
+      sendResponse({ error: 'SYNC_FAILED', detail: String(err?.message || err) })
+    );
     return true;
   }
   if (message.type === 'SIGN_IN') {
@@ -450,10 +639,6 @@ async function proxyPost(path, body, tokenOverride) {
     body: JSON.stringify(body)
   });
   return response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-}
-
-async function getMe() {
-  return proxyPost('/v1/me', {}, await getCachedGoogleToken());
 }
 
 async function openCheckout() {
