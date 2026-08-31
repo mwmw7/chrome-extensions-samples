@@ -1,4 +1,10 @@
 /* global XLSX */
+// A word can legitimately be "constructor" (or any other Object.prototype
+// key) — plain truthiness on savedWords/reviewMeta objects would read the
+// inherited prototype value instead of an actual entry. Own-property checks
+// everywhere "is this word saved" is decided.
+const hasWord = (obj, w) => Object.prototype.hasOwnProperty.call(obj, w);
+
 const statusEl = document.getElementById('status');
 const wordCountEl = document.getElementById('word-count');
 const searchInput = document.getElementById('search-input');
@@ -202,7 +208,7 @@ searchInput.addEventListener('input', () => {
 // enforces the free-tier limit. The mirror updates via storage.onChanged
 // once the SW's write lands, which is what actually re-renders the list.
 function toggleSave(word) {
-  const saving = !savedWords[word];
+  const saving = !hasWord(savedWords, word);
   const type = saving ? 'SAVE_WORD' : 'DELETE_WORD';
   const payload = saving
     ? {
@@ -261,19 +267,9 @@ function entitlementErrorHtml(resp) {
   };
 
   switch (resp.error) {
-    case 'FREE_LIMIT_REACHED':
-      // One action either way. Subscribing handles sign-in on its own, so
-      // offering "sign in" separately here would just add a step.
-      return `<div class="detail-error">오늘의 무료 분석 ${resp.limit ?? ''}회를 모두 사용했습니다.
-        <button class="upgrade-inline">Pro 구독하기</button></div>`;
-    case 'QUOTA_EXCEEDED':
-      return `<div class="detail-error">이번 결제 주기의 사용량을 모두 소진했습니다.
-        ${resp.resetAt ? escapeHtml(new Date(resp.resetAt).toLocaleDateString('ko-KR')) + ' 에 초기화됩니다.' : ''}</div>`;
     case 'SIGN_IN_REQUIRED':
       return `<div class="detail-error">로그인이 필요합니다.
         <button class="signin-inline">Google 로그인</button></div>`;
-    case 'NO_SUBSCRIPTION':
-      return '<div class="detail-error">활성 구독이 없습니다. Settings에서 확인하세요.</div>';
     case 'NO_API_KEY': {
       const name = providerNames[resp.provider] || resp.provider;
       return `<div class="detail-error">Settings에서 ${escapeHtml(name)} API 키를 입력하세요.</div>`;
@@ -288,9 +284,6 @@ function entitlementErrorHtml(resp) {
 
 // Delegated: the button is rendered inside dynamically-built cards.
 document.addEventListener('click', (e) => {
-  if (e.target.classList.contains('upgrade-inline')) {
-    chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, () => {});
-  }
   if (e.target.classList.contains('signin-inline')) {
     chrome.runtime.sendMessage({ type: 'SIGN_IN' }, () => {});
   }
@@ -351,7 +344,7 @@ function render() {
     const isInt = intermediateWords.has(word);
     const isAdv = advancedWords.has(word);
     const isToefl = toeflWords.has(word);
-    const isSaved = !!savedWords[word];
+    const isSaved = hasWord(savedWords, word);
     const isOpen = openWord === word;
 
     const row = document.createElement('div');
@@ -790,7 +783,7 @@ function checkoutErrorMessage(res) {
   }
   const messages = {
     SIGN_IN_REQUIRED: '로그인이 필요합니다. 설정에서 로그인하세요.',
-    ALREADY_SUBSCRIBED: '이미 구독 중입니다.'
+    ALREADY_PAID: '이미 구매하셨습니다. 잠시 후 자동으로 반영됩니다.'
   };
   return messages[res?.error] || '결제 페이지를 열지 못했습니다.';
 }
