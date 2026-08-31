@@ -26,8 +26,10 @@ let currentTab = 'all'; // 'all' | 'saved' | 'review'
 let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 'toefl'
 
 // Review state
+let reviewMeta = {}; // { word: { box, nextDue } }, synced from storage.local
 let reviewList = [];
 let reviewIndex = 0;
+let againQueue = [];
 
 // --- On panel open: extract words from current tab immediately ---
 chrome.runtime.sendMessage({ type: 'PANEL_OPENED' });
@@ -134,11 +136,12 @@ chrome.storage.session.get(
 // Load persistent cache from local (savedWords mirror lives here too — the
 // server owns the source of truth, this is just what the SW last synced).
 chrome.storage.local.get(
-  ['translations', 'wordDetails', 'savedWords'],
+  ['translations', 'wordDetails', 'savedWords', 'reviewMeta'],
   (data) => {
     if (data.translations) translations = data.translations;
     if (data.wordDetails) wordDetails = data.wordDetails;
     if (data.savedWords) savedWords = data.savedWords;
+    if (data.reviewMeta) reviewMeta = data.reviewMeta;
     updateSavedCount();
     render();
   }
@@ -165,6 +168,9 @@ chrome.storage.local.onChanged.addListener((changes) => {
   if (changes.savedWords) {
     savedWords = changes.savedWords.newValue || {};
     updateSavedCount();
+  }
+  if (changes.reviewMeta) {
+    reviewMeta = changes.reviewMeta.newValue || {};
   }
   if (changes.limitNotice) {
     const notice = changes.limitNotice.newValue;
@@ -556,26 +562,80 @@ const reviewKoreanEl = document.getElementById('review-korean');
 const reviewDetailEl = document.getElementById('review-detail');
 const reviewAnswer = document.getElementById('review-answer');
 const reviewShowBtn = document.getElementById('review-show');
-const reviewNextBtn = document.getElementById('review-next');
+const reviewAgainBtn = document.getElementById('review-again');
+const reviewGoodBtn = document.getElementById('review-good');
 const reviewProgressEl = document.getElementById('review-progress');
 const reviewSpeakBtn = document.getElementById('review-speak');
+const reviewLockEl = document.getElementById('review-lock');
+const reviewBuyBtn = document.getElementById('review-buy');
+
+// Leitner box spacing, in ms — must match the service worker's BOX_MS so the
+// optimistic local update below lands on the same due date it will compute.
+const BOX_MS = { 1: 86400000, 2: 259200000, 3: 604800000 };
 
 reviewSpeakBtn.addEventListener('click', () => {
   const word = reviewList[reviewIndex];
   if (word) speakWord(word, reviewSpeakBtn);
 });
 
-function startReview() {
-  reviewList = shuffle(Object.keys(savedWords));
+// Session = due words only (nextDue <= now; missing meta counts as due),
+// soonest-due first.
+function buildReviewSession() {
+  const now = Date.now();
+  reviewList = Object.keys(savedWords)
+    .filter((w) => (reviewMeta[w]?.nextDue ?? 0) <= now)
+    .sort(
+      (a, b) => (reviewMeta[a]?.nextDue ?? 0) - (reviewMeta[b]?.nextDue ?? 0)
+    );
   reviewIndex = 0;
+  againQueue = [];
+}
 
-  if (reviewList.length === 0) {
-    reviewEmpty.classList.remove('hidden');
-    reviewCard.classList.add('hidden');
+function formatNextDueMessage() {
+  const now = Date.now();
+  const upcoming = Object.keys(savedWords)
+    .map((w) => reviewMeta[w]?.nextDue)
+    .filter((t) => typeof t === 'number' && t > now)
+    .sort((a, b) => a - b);
+  if (upcoming.length === 0) return '오늘 복습할 단어가 없습니다.';
+  const d = new Date(upcoming[0]);
+  return `오늘 복습할 단어가 없습니다. 다음 복습: ${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+
+async function isReviewLocked() {
+  const me = await new Promise((r) =>
+    chrome.runtime.sendMessage({ type: 'GET_ME' }, r)
+  );
+  if (me?.paid) return false;
+  const today = new Date().toDateString();
+  const { reviewTrial = {} } = await chrome.storage.local.get('reviewTrial');
+  return reviewTrial.date === today && (reviewTrial.count || 0) >= 3;
+}
+
+function showReviewLock() {
+  reviewCard.classList.add('hidden');
+  reviewEmpty.classList.add('hidden');
+  reviewLockEl.classList.remove('hidden');
+}
+
+async function startReview() {
+  reviewLockEl.classList.add('hidden');
+  reviewCard.classList.add('hidden');
+  reviewEmpty.classList.add('hidden');
+
+  if (await isReviewLocked()) {
+    showReviewLock();
     return;
   }
 
-  reviewEmpty.classList.add('hidden');
+  buildReviewSession();
+
+  if (reviewList.length === 0) {
+    reviewEmpty.textContent = formatNextDueMessage();
+    reviewEmpty.classList.remove('hidden');
+    return;
+  }
+
   reviewCard.classList.remove('hidden');
   showReviewCard();
 }
@@ -587,7 +647,8 @@ function showReviewCard() {
   reviewKoreanEl.textContent = translations[word] || '...';
   reviewAnswer.classList.add('hidden');
   reviewShowBtn.classList.remove('hidden');
-  reviewNextBtn.classList.add('hidden');
+  reviewAgainBtn.classList.add('hidden');
+  reviewGoodBtn.classList.add('hidden');
 
   // Prepare detail
   const d = wordDetails[word];
@@ -650,7 +711,8 @@ function renderReviewDetail(d) {
 reviewShowBtn.addEventListener('click', () => {
   reviewAnswer.classList.remove('hidden');
   reviewShowBtn.classList.add('hidden');
-  reviewNextBtn.classList.remove('hidden');
+  reviewAgainBtn.classList.remove('hidden');
+  reviewGoodBtn.classList.remove('hidden');
 
   // Re-render detail in case it loaded while hidden
   const word = reviewList[reviewIndex];
@@ -658,18 +720,91 @@ reviewShowBtn.addEventListener('click', () => {
   if (d) renderReviewDetail(d);
 });
 
-reviewNextBtn.addEventListener('click', () => {
-  reviewIndex++;
+reviewAgainBtn.addEventListener('click', () => gradeCard('again'));
+reviewGoodBtn.addEventListener('click', () => gradeCard('good'));
+
+// Optimistic local reviewMeta update, mirroring the service worker's math,
+// so a session rebuilt before the SW round-trip lands still sees the right
+// due dates. The authoritative value arrives shortly after via
+// storage.local.onChanged and simply overwrites this with the same result.
+function applyOptimisticGrade(word, grade) {
+  const cur = reviewMeta[word] || { box: 1 };
+  const box = grade === 'good' ? Math.min((cur.box || 1) + 1, 3) : 1;
+  reviewMeta[word] = { box, nextDue: Date.now() + BOX_MS[box] };
+}
+
+async function gradeCard(grade) {
+  const word = reviewList[reviewIndex];
+  if (!word) return;
+  chrome.runtime.sendMessage({ type: 'REVIEW_GRADE', word, grade }, () => {});
+  applyOptimisticGrade(word, grade);
+  if (grade === 'again') againQueue.push(word);
+  advanceCard();
+  await bumpTrialAndMaybeLock();
+}
+
+function advanceCard() {
+  reviewIndex += 1;
   if (reviewIndex >= reviewList.length) {
-    reviewIndex = 0;
-    reviewList = shuffle(Object.keys(savedWords));
-    if (reviewList.length === 0) {
-      reviewEmpty.classList.remove('hidden');
+    if (againQueue.length) {
+      // Missed cards come back at the end of the same session.
+      reviewList = againQueue;
+      againQueue = [];
+      reviewIndex = 0;
+    } else {
       reviewCard.classList.add('hidden');
+      reviewEmpty.classList.remove('hidden');
+      reviewEmpty.textContent = '오늘 복습 완료!';
       return;
     }
   }
   showReviewCard();
+}
+
+// Free trial: paid users unlimited; unpaid get 3 graded cards per calendar
+// day. Locking happens right after the count crosses 3, mid-session.
+async function bumpTrialAndMaybeLock() {
+  const me = await new Promise((r) =>
+    chrome.runtime.sendMessage({ type: 'GET_ME' }, r)
+  );
+  if (me?.paid) return;
+  const today = new Date().toDateString();
+  const { reviewTrial = {} } = await chrome.storage.local.get('reviewTrial');
+  const count = reviewTrial.date === today ? (reviewTrial.count || 0) + 1 : 1;
+  await chrome.storage.local.set({ reviewTrial: { date: today, count } });
+  if (count >= 3) showReviewLock();
+}
+
+function checkoutErrorMessage(res) {
+  if (/browser signin/i.test(res?.detail || '')) {
+    return (
+      'Chrome 브라우저 로그인이 꺼져 있어 Google 로그인을 할 수 없습니다. ' +
+      'chrome://settings/syncSetup 에서 "Chrome에 로그인 허용"을 켜주세요.'
+    );
+  }
+  if (res?.error === 'TOKEN_REJECTED') {
+    return '로그인은 되었지만 서버가 인증을 거부했습니다.';
+  }
+  if (res?.error === 'SIGN_IN_FAILED') {
+    return '로그인이 취소되었습니다.';
+  }
+  const messages = {
+    SIGN_IN_REQUIRED: '로그인이 필요합니다. 설정에서 로그인하세요.',
+    ALREADY_SUBSCRIBED: '이미 구독 중입니다.'
+  };
+  return messages[res?.error] || '결제 페이지를 열지 못했습니다.';
+}
+
+reviewBuyBtn.addEventListener('click', () => {
+  reviewBuyBtn.disabled = true;
+  chrome.runtime.sendMessage({ type: 'OPEN_CHECKOUT' }, (res) => {
+    reviewBuyBtn.disabled = false;
+    if (res && res.url) {
+      showToast('새 탭에서 결제를 완료한 뒤 새로고침하세요.');
+      return;
+    }
+    showToast(checkoutErrorMessage(res));
+  });
 });
 
 // =====================
@@ -800,15 +935,6 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
-}
-
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
 }
 
 // =====================

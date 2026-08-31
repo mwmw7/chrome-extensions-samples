@@ -715,15 +715,60 @@ body {
   background: #1d4ed8;
 }
 
-#review-next {
-  background: #16a34a;
+.review-grade {
+  flex: 1;
+  max-width: 140px;
+}
+
+#review-again {
+  background: #64748b;
   color: #fff;
 }
 
-#review-next:hover {
-  background: #15803d;
+#review-again:hover {
+  background: #475569;
 }
 
+#review-good {
+  background: #7c3aed;
+  color: #fff;
+}
+
+#review-good:hover {
+  background: #6d28d9;
+}
+
+#review-lock {
+  padding: 32px 12px;
+  text-align: center;
+}
+
+#review-lock p {
+  font-size: 13px;
+  color: #334155;
+  margin: 0 0 12px;
+}
+
+#review-lock .hint {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+#review-lock .primary-btn {
+  border: none;
+  border-radius: 6px;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+#review-lock .primary-btn:hover {
+  background: #6d28d9;
+}
 
 #quota-badge {
   font-size: 10px;
