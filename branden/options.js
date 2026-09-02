@@ -1,9 +1,5 @@
 const claudeKeyInput = document.getElementById('claude-key-input');
 const claudeModelSelect = document.getElementById('claude-model-select');
-const geminiKeyInput = document.getElementById('gemini-key-input');
-const geminiModelSelect = document.getElementById('gemini-model-select');
-const openaiKeyInput = document.getElementById('openai-key-input');
-const openaiModelSelect = document.getElementById('openai-model-select');
 const signinLink = document.getElementById('signin-link');
 const signoutLink = document.getElementById('signout-link');
 const refreshLink = document.getElementById('refresh-link');
@@ -14,95 +10,28 @@ const upgradeBtn = document.getElementById('upgrade-btn');
 const planTierEl = document.getElementById('plan-tier');
 const saveBtn = document.getElementById('save-btn');
 const statusEl = document.getElementById('status');
-const providerOptions = document.querySelectorAll('.provider-option');
-const claudeSection = document.getElementById('claude-section');
-const geminiSection = document.getElementById('gemini-section');
-const openaiSection = document.getElementById('openai-section');
 
 // Load saved settings
-chrome.storage.sync.get(
-  [
-    'apiKey',
-    'geminiKey',
-    'openaiKey',
-    'aiProvider',
-    'geminiModel',
-    'claudeModel',
-    'openaiModel'
-  ],
-  (data) => {
-    if (data.apiKey) claudeKeyInput.value = data.apiKey;
-    if (data.geminiKey) geminiKeyInput.value = data.geminiKey;
-    if (data.openaiKey) openaiKeyInput.value = data.openaiKey;
-    selectProvider(data.aiProvider || 'gemini');
-    if (data.claudeModel) claudeModelSelect.value = data.claudeModel;
-    if (data.geminiModel) geminiModelSelect.value = data.geminiModel;
-    if (data.openaiModel) openaiModelSelect.value = data.openaiModel;
-  }
-);
-
-// Provider toggle
-providerOptions.forEach((opt) => {
-  opt.addEventListener('click', () => {
-    selectProvider(opt.dataset.provider);
-  });
+chrome.storage.sync.get(['apiKey', 'claudeModel'], (data) => {
+  if (data.apiKey) claudeKeyInput.value = data.apiKey;
+  if (data.claudeModel) claudeModelSelect.value = data.claudeModel;
 });
-
-function selectProvider(provider) {
-  providerOptions.forEach((o) => {
-    const isSelected = o.dataset.provider === provider;
-    o.classList.toggle('selected', isSelected);
-    o.querySelector('input').checked = isSelected;
-  });
-  claudeSection.classList.toggle('visible', provider === 'claude');
-  geminiSection.classList.toggle('visible', provider === 'gemini');
-  openaiSection.classList.toggle('visible', provider === 'openai');
-}
 
 // Save
 saveBtn.addEventListener('click', () => {
-  const provider = document.querySelector(
-    'input[name="provider"]:checked'
-  ).value;
   const claudeKey = claudeKeyInput.value.trim();
   const claudeModel = claudeModelSelect.value;
-  const geminiKey = geminiKeyInput.value.trim();
-  const geminiModel = geminiModelSelect.value;
-  const openaiKey = openaiKeyInput.value.trim();
-  const openaiModel = openaiModelSelect.value;
 
-  if (provider === 'claude' && !claudeKey) {
-    showStatus('Please enter a Claude API key.', true);
-    return;
-  }
-  if (provider === 'gemini' && !geminiKey) {
-    showStatus('Please enter a Gemini API key.', true);
-    return;
-  }
-  if (provider === 'openai' && !openaiKey) {
-    showStatus('Please enter an OpenAI API key.', true);
+  if (!claudeKey) {
+    showStatus('Claude API 키를 입력하세요.', true);
     return;
   }
 
-  chrome.storage.sync.set(
-    {
-      apiKey: claudeKey,
-      claudeModel,
-      geminiKey,
-      aiProvider: provider,
-      geminiModel,
-      openaiKey,
-      openaiModel
-    },
-    () => {
-      const names = {
-        claude: `Claude (${claudeModel.split('-')[1]})`,
-        gemini: `Gemini (${geminiModel})`,
-        openai: `OpenAI (${openaiModel})`
-      };
-      showStatus(`Saved! Using ${names[provider]} for word details.`, false);
-    }
-  );
+  chrome.storage.sync.set({ apiKey: claudeKey, claudeModel }, () => {
+    const label =
+      claudeModelSelect.selectedOptions[0]?.textContent.trim() || claudeModel;
+    showStatus(`저장되었습니다. 단어 분석에 ${label}을(를) 사용합니다.`, false);
+  });
 });
 
 function showStatus(msg, isError) {

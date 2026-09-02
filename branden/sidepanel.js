@@ -26,7 +26,7 @@ let wordDetails = {};
 let wordContexts = {}; // { word: "sentence from page" }
 let pageText = ''; // truncated page content for phrase lookups
 let savedWords = {}; // { word: timestamp }
-let aiProvider = 'gemini';
+
 let openWord = null;
 let currentTab = 'all'; // 'all' | 'saved' | 'review'
 let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 'toefl'
@@ -110,10 +110,7 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
 });
 
 // --- Load data ---
-chrome.storage.sync.get(['aiProvider'], (data) => {
-  aiProvider = data.aiProvider || 'gemini';
-  updateAiBadge();
-});
+updateAiBadge();
 
 // Load page-specific data from session
 chrome.storage.session.get(
@@ -194,13 +191,6 @@ chrome.storage.local.onChanged.addListener((changes) => {
   if (currentTab !== 'review') render();
 });
 
-chrome.storage.sync.onChanged.addListener((changes) => {
-  if (changes.aiProvider) {
-    aiProvider = changes.aiProvider.newValue || 'gemini';
-    updateAiBadge();
-  }
-});
-
 // --- Search ---
 searchInput.addEventListener('input', () => {
   openWord = null;
@@ -264,20 +254,12 @@ function showToast(msg) {
 // Single source of truth for paywall/quota copy, so the word view and the
 // phrase view can never drift apart.
 function entitlementErrorHtml(resp) {
-  const providerNames = {
-    claude: 'Claude',
-    gemini: 'Gemini',
-    openai: 'OpenAI'
-  };
-
   switch (resp.error) {
     case 'SIGN_IN_REQUIRED':
       return `<div class="detail-error">로그인이 필요합니다.
         <button class="signin-inline">Google 로그인</button></div>`;
-    case 'NO_API_KEY': {
-      const name = providerNames[resp.provider] || resp.provider;
-      return `<div class="detail-error">Settings에서 ${escapeHtml(name)} API 키를 입력하세요.</div>`;
-    }
+    case 'NO_API_KEY':
+      return `<div class="detail-error">Settings에서 Claude API 키를 입력하세요.</div>`;
     case 'UPSTREAM_ERROR':
     case 'EMPTY_RESPONSE':
       return '<div class="detail-error">일시적인 오류입니다. 잠시 후 다시 시도하세요.</div>';
@@ -294,9 +276,8 @@ document.addEventListener('click', (e) => {
 });
 
 function updateAiBadge() {
-  const badgeNames = { claude: 'Claude', gemini: 'Gemini', openai: 'OpenAI' };
-  aiBadge.textContent = badgeNames[aiProvider] || aiProvider;
-  aiBadge.className = 'ai-badge-' + aiProvider;
+  aiBadge.textContent = 'Claude';
+  aiBadge.className = 'ai-badge-claude';
 }
 
 // =====================

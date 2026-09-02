@@ -7,7 +7,17 @@ chrome.sidePanel
 
 chrome.runtime.onInstalled.addListener(() => {
   // v1 stored an accessMode toggle; the proxy it selected no longer exists.
-  chrome.storage.sync.remove('accessMode');
+  // Gemini/OpenAI support was removed in v2 — their stored keys go too, so
+  // credentials for surfaces this extension no longer talks to don't linger
+  // in sync storage.
+  chrome.storage.sync.remove([
+    'accessMode',
+    'aiProvider',
+    'geminiKey',
+    'geminiModel',
+    'openaiKey',
+    'openaiModel'
+  ]);
 });
 
 const PROXY_BASE = 'https://eng-ko-translator-proxy.mwmw77.workers.dev';
@@ -845,27 +855,13 @@ async function googleTranslateBatch(words) {
 
 // --- Shared settings load -----------------------------------
 
-const SETTING_KEYS = [
-  'apiKey',
-  'geminiKey',
-  'openaiKey',
-  'aiProvider',
-  'geminiModel',
-  'claudeModel',
-  'openaiModel'
-];
+const SETTING_KEYS = ['apiKey', 'claudeModel'];
 
-/** Resolves which own-key backend to use for word/phrase lookups. */
+/** Resolves the Claude own-key backend for word/phrase lookups. */
 async function resolveBackend() {
   const settings = await chrome.storage.sync.get(SETTING_KEYS);
-  const provider = settings.aiProvider || 'gemini';
-  const keyMap = {
-    claude: settings.apiKey,
-    gemini: settings.geminiKey,
-    openai: settings.openaiKey
-  };
-  if (!keyMap[provider]) return { error: 'NO_API_KEY', provider };
-  return { provider, settings };
+  if (!settings.apiKey) return { error: 'NO_API_KEY', provider: 'claude' };
+  return { provider: 'claude', settings };
 }
 
 // --- On-demand word detail ----------------------------------
@@ -887,11 +883,7 @@ async function fetchWordDetail(word, context) {
   }
 
   try {
-    const detail = await callOwnKey(
-      WORD_PROMPT(word, context),
-      provider,
-      settings
-    );
+    const detail = await callOwnKey(WORD_PROMPT(word, context), settings);
 
     const s = await chrome.storage.local.get('wordDetails');
     const merged = { ...(s.wordDetails || {}), [word]: detail };
@@ -933,11 +925,7 @@ async function fetchPhraseDetail(phrase, pageText) {
   const { provider, settings } = backend;
 
   try {
-    const detail = await callOwnKey(
-      PHRASE_PROMPT(phrase, pageText),
-      provider,
-      settings
-    );
+    const detail = await callOwnKey(PHRASE_PROMPT(phrase, pageText), settings);
 
     return { detail, provider };
   } catch (err) {
@@ -977,23 +965,9 @@ async function openCheckout() {
   return result;
 }
 
-// --- Own-key providers --------------------------------------
+// --- Own-key provider (Claude only) -------------------------
 
-async function callOwnKey(prompt, provider, settings) {
-  if (provider === 'gemini') {
-    return callGemini(
-      prompt,
-      settings.geminiKey,
-      settings.geminiModel || 'gemini-2.5-flash'
-    );
-  }
-  if (provider === 'openai') {
-    return callOpenAI(
-      prompt,
-      settings.openaiKey,
-      settings.openaiModel || 'gpt-4.1-mini'
-    );
-  }
+async function callOwnKey(prompt, settings) {
   return callClaude(
     prompt,
     settings.apiKey,
@@ -1034,81 +1008,6 @@ async function callClaude(prompt, apiKey, model) {
 
   const data = await response.json();
   const raw = data.content[0].text;
-  return parseJSON(raw);
-}
-
-// --- Gemini API ---
-
-async function callGemini(prompt, apiKey, model) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey
-    },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
-    })
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error(
-        'Gemini API 키 인증 실패 — aistudio.google.com/apikey 에서 키를 생성했는지 확인하세요.'
-      );
-    }
-    if (response.status === 429) {
-      throw new Error(
-        'Gemini API 할당량 초과 — billing을 활성화하거나 할당량을 확인하세요.'
-      );
-    }
-    if (response.status === 403) {
-      throw new Error('Gemini API 키가 유효하지 않거나 권한이 없습니다.');
-    }
-    const err = await response.text();
-    throw new Error(`Gemini ${response.status}: ${err}`);
-  }
-
-  const data = await response.json();
-  const raw = data.candidates[0].content.parts[0].text;
-  return parseJSON(raw);
-}
-
-// --- OpenAI API ---
-
-async function callOpenAI(prompt, apiKey, model) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1024,
-      temperature: 0.3,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-
-  if (!response.ok) {
-    if (response.status === 429) {
-      throw new Error(
-        'OpenAI API 할당량 초과 — API 사용량 및 billing을 확인하세요.'
-      );
-    }
-    if (response.status === 401) {
-      throw new Error('OpenAI API 키가 유효하지 않습니다.');
-    }
-    const err = await response.text();
-    throw new Error(`OpenAI ${response.status}: ${err}`);
-  }
-
-  const data = await response.json();
-  const raw = data.choices[0].message.content;
   return parseJSON(raw);
 }
 
