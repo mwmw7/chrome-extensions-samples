@@ -803,3 +803,10 @@ body {
 .signin-inline:hover {
   background: #6d28d9;
 }
+
+#list-sentinel {
+  text-align: center;
+  color: #b0b0b0;
+  font-size: 12px;
+  padding: 10px 0 14px;
+}

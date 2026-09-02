@@ -507,6 +507,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PANEL_OPENED') {
     extractFromActiveTab();
   }
+  if (message.type === 'TRANSLATE_WORDS') {
+    translateWords(message.words).then(sendResponse, (err) =>
+      sendResponse({ error: String(err?.message || err) })
+    );
+    return true;
+  }
   if (message.type === 'FETCH_WORD_DETAIL') {
     fetchWordDetail(message.word, message.context).then(sendResponse);
     return true;
@@ -777,51 +783,70 @@ async function handleWords(words, contexts = {}, pageText = '') {
     await chrome.storage.local.set({ translations: merged });
   }
 
-  if (uncached.length > 0) {
-    // Rate-limit cooldown: the free endpoint throttles by IP, and hammering
-    // it while throttled only extends the block. Skip quietly and let the
-    // next tab event retry once the window has passed.
-    if (Date.now() < translateCooldownUntil) {
-      const wait = Math.ceil((translateCooldownUntil - Date.now()) / 1000);
-      await chrome.storage.session.set({
-        status: `번역 일시 중지(요청 과다) — 약 ${wait}초 후 자동 재개됩니다`
-      });
-      return;
-    }
+  // Translation is LAZY: the panel asks for exactly the words on screen
+  // via TRANSLATE_WORDS. Parsing/classification above stays eager (free);
+  // only the Google requests wait for a viewer.
+  await chrome.storage.session.set({
+    status: uncached.length ? `단어 ${words.length}개` : 'Translation complete!'
+  });
+}
 
-    const batches = chunk(uncached, BATCH_SIZE);
-    for (let i = 0; i < batches.length; i++) {
-      await chrome.storage.session.set({
-        status: `Translating batch ${i + 1} of ${batches.length}...`
-      });
-      try {
-        const results = await googleTranslateBatch(batches[i]);
-        for (const [w, t] of Object.entries(results)) {
-          memoryCache.set(w, t);
-        }
-        const stored = await chrome.storage.local.get('translations');
-        const merged = { ...(stored.translations || {}), ...results };
-        await chrome.storage.local.set({ translations: merged });
-      } catch (err) {
-        if (String(err.message).includes('429')) {
-          translateCooldownUntil = Date.now() + TRANSLATE_COOLDOWN_MS;
-          await chrome.storage.session.set({
-            status:
-              '번역 일시 중지(요청 과다) — 잠시 후 탭을 전환하면 재개됩니다'
-          });
-        } else {
-          await chrome.storage.session.set({
-            status: `Translation error: ${err.message}`
-          });
-        }
-        return; // 이미 성공한 배치는 저장됐음 — 부분 결과는 유지된다
-      }
-      // Space batches out; bursts are what earn the 429 in the first place.
-      if (i < batches.length - 1) await new Promise((r) => setTimeout(r, 350));
-    }
+// On-demand translation for the words the panel is actually showing.
+async function translateWords(requested) {
+  const list = [
+    ...new Set(
+      (requested || []).map((w) =>
+        String(w || '')
+          .trim()
+          .toLowerCase()
+      )
+    )
+  ].filter(Boolean);
+
+  const stored = await chrome.storage.local.get('translations');
+  const existing = stored.translations || {};
+  const missing = list.filter((w) => !memoryCache.has(w) && !existing[w]);
+  if (!missing.length) return { ok: true, translated: 0 };
+
+  if (Date.now() < translateCooldownUntil) {
+    const wait = Math.ceil((translateCooldownUntil - Date.now()) / 1000);
+    await chrome.storage.session.set({
+      status: `번역 일시 중지(요청 과다) — 약 ${wait}초 후 자동 재개됩니다`
+    });
+    return { cooldown: wait };
   }
 
-  await chrome.storage.session.set({ status: 'Translation complete!' });
+  const batches = chunk(missing, BATCH_SIZE);
+  let translated = 0;
+  for (let i = 0; i < batches.length; i++) {
+    try {
+      const results = await googleTranslateBatch(batches[i]);
+      for (const [w, t] of Object.entries(results)) memoryCache.set(w, t);
+      const st = await chrome.storage.local.get('translations');
+      await chrome.storage.local.set({
+        translations: { ...(st.translations || {}), ...results }
+      });
+      translated += Object.keys(results).length;
+    } catch (err) {
+      if (String(err.message).includes('429')) {
+        translateCooldownUntil = Date.now() + TRANSLATE_COOLDOWN_MS;
+        await chrome.storage.session.set({
+          status: '번역 일시 중지(요청 과다) — 잠시 후 자동 재개됩니다'
+        });
+        return {
+          cooldown: Math.ceil(TRANSLATE_COOLDOWN_MS / 1000),
+          translated
+        };
+      }
+      await chrome.storage.session.set({
+        status: `Translation error: ${err.message}`
+      });
+      return { error: err.message, translated };
+    }
+    if (i < batches.length - 1) await new Promise((r) => setTimeout(r, 350));
+  }
+  await chrome.storage.session.set({ status: '' });
+  return { ok: true, translated };
 }
 
 // One request per BATCH, not per word. The old shape fired 50 parallel

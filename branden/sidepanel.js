@@ -31,6 +31,38 @@ let openWord = null;
 let currentTab = 'all'; // 'all' | 'saved' | 'review'
 let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 'toefl'
 
+// Lazy translation window: only this many rows render (and only their
+// missing translations get requested). Scrolling the sentinel into view
+// extends the window by another page — a tab full of words costs one
+// 30-word translate request instead of the whole page's worth.
+const PAGE_SIZE = 30;
+let visibleCount = PAGE_SIZE;
+let translateTimer = null;
+const listObserver = new IntersectionObserver((entries) => {
+  if (entries.some((e) => e.isIntersecting)) {
+    visibleCount += PAGE_SIZE;
+    render();
+  }
+});
+
+function requestVisibleTranslations(words) {
+  const missing = words.filter((w) => !translations[w]);
+  if (!missing.length) return;
+  clearTimeout(translateTimer);
+  translateTimer = setTimeout(() => {
+    chrome.runtime.sendMessage(
+      { type: 'TRANSLATE_WORDS', words: missing },
+      (resp) => {
+        // Cooldown: retry once after it lapses, for whatever is still
+        // visible and untranslated by then.
+        if (resp?.cooldown) {
+          setTimeout(() => render(), (resp.cooldown + 1) * 1000);
+        }
+      }
+    );
+  }, 250);
+}
+
 // Review state
 let reviewMeta = {}; // { word: { box, nextDue } }, synced from storage.local
 let reviewList = [];
@@ -72,6 +104,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
       .forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     openWord = null;
+    visibleCount = PAGE_SIZE;
 
     listView.classList.add('hidden');
     reviewView.classList.add('hidden');
@@ -105,6 +138,7 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
       .forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     openWord = null;
+    visibleCount = PAGE_SIZE;
     render();
   });
 });
@@ -152,7 +186,10 @@ chrome.storage.local.get(
 
 // --- Real-time updates ---
 chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes.allWords) allWords = changes.allWords.newValue || [];
+  if (changes.allWords) {
+    allWords = changes.allWords.newValue || [];
+    visibleCount = PAGE_SIZE; // new page, new window
+  }
   if (changes.status) statusEl.textContent = changes.status.newValue || '';
   if (changes.intermediateWords)
     intermediateWords = new Set(changes.intermediateWords.newValue || []);
@@ -194,6 +231,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
 // --- Search ---
 searchInput.addEventListener('input', () => {
   openWord = null;
+  visibleCount = PAGE_SIZE;
   render();
 });
 
@@ -324,8 +362,14 @@ function render() {
     wordCountEl.textContent = `${translatedCount}/${filtered.length} translated${filterLabel} · ${intCount} INT · ${advCount} ADV`;
   }
 
+  const windowed = filtered.slice(0, visibleCount);
+
+  // Full rebuilds happen on every translation batch; keep the scroll where
+  // the user left it or lazy-loading feels like being yanked to the top.
+  const scrollTop = wordListEl.scrollTop;
+  listObserver.disconnect();
   wordListEl.innerHTML = '';
-  for (const word of filtered) {
+  for (const word of windowed) {
     const isInt = intermediateWords.has(word);
     const isAdv = advancedWords.has(word);
     const isToefl = toeflWords.has(word);
@@ -439,6 +483,18 @@ function render() {
 
     wordListEl.appendChild(row);
   }
+
+  if (filtered.length > windowed.length) {
+    const sentinel = document.createElement('div');
+    sentinel.id = 'list-sentinel';
+    sentinel.textContent = `${filtered.length - windowed.length}개 더…`;
+    wordListEl.appendChild(sentinel);
+    listObserver.observe(sentinel);
+  }
+  wordListEl.scrollTop = scrollTop;
+
+  // Only the words on screen earn a Google request.
+  requestVisibleTranslations(windowed);
 }
 
 // =====================
