@@ -977,6 +977,13 @@ async function callOwnKey(prompt, settings) {
 
 // --- Claude API ---
 
+// Opus 5 and Fable 5 think by default and the thinking spends from
+// max_tokens, so the 1024 that fits a plain dictionary answer would come
+// back as reasoning with a truncated JSON tail. Give those models room.
+function claudeMaxTokens(model) {
+  return /^claude-(opus-5|fable-5)/.test(model) ? 4096 : 1024;
+}
+
 async function callClaude(prompt, apiKey, model) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -988,7 +995,7 @@ async function callClaude(prompt, apiKey, model) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1024,
+      max_tokens: claudeMaxTokens(model),
       messages: [{ role: 'user', content: prompt }]
     })
   });
@@ -1007,8 +1014,19 @@ async function callClaude(prompt, apiKey, model) {
   }
 
   const data = await response.json();
-  const raw = data.content[0].text;
-  return parseJSON(raw);
+  // Safety classifiers on Opus 5 / Fable 5 can decline with HTTP 200 —
+  // check before reading content, or an empty array throws a confusing
+  // TypeError instead of an actionable message.
+  if (data.stop_reason === 'refusal') {
+    throw new Error('모델이 이 요청을 거부했습니다. 다른 단어로 시도하세요.');
+  }
+  // With thinking on (Opus 5 / Fable 5 default), content[0] is a thinking
+  // block, not the answer — find the text block instead of assuming order.
+  const textBlock = (data.content || []).find((b) => b.type === 'text');
+  if (!textBlock?.text) {
+    throw new Error('모델 응답에 본문이 없습니다. 잠시 후 다시 시도하세요.');
+  }
+  return parseJSON(textBlock.text);
 }
 
 // --- Shared JSON parser (strips markdown fences) ---
