@@ -768,6 +768,17 @@ async function handleWords(words, contexts = {}, pageText = '') {
   }
 
   if (uncached.length > 0) {
+    // Rate-limit cooldown: the free endpoint throttles by IP, and hammering
+    // it while throttled only extends the block. Skip quietly and let the
+    // next tab event retry once the window has passed.
+    if (Date.now() < translateCooldownUntil) {
+      const wait = Math.ceil((translateCooldownUntil - Date.now()) / 1000);
+      await chrome.storage.session.set({
+        status: `번역 일시 중지(요청 과다) — 약 ${wait}초 후 자동 재개됩니다`
+      });
+      return;
+    }
+
     const batches = chunk(uncached, BATCH_SIZE);
     for (let i = 0; i < batches.length; i++) {
       await chrome.storage.session.set({
@@ -782,29 +793,53 @@ async function handleWords(words, contexts = {}, pageText = '') {
         const merged = { ...(stored.translations || {}), ...results };
         await chrome.storage.local.set({ translations: merged });
       } catch (err) {
-        await chrome.storage.session.set({
-          status: `Translation error: ${err.message}`
-        });
-        return;
+        if (String(err.message).includes('429')) {
+          translateCooldownUntil = Date.now() + TRANSLATE_COOLDOWN_MS;
+          await chrome.storage.session.set({
+            status:
+              '번역 일시 중지(요청 과다) — 잠시 후 탭을 전환하면 재개됩니다'
+          });
+        } else {
+          await chrome.storage.session.set({
+            status: `Translation error: ${err.message}`
+          });
+        }
+        return; // 이미 성공한 배치는 저장됐음 — 부분 결과는 유지된다
       }
+      // Space batches out; bursts are what earn the 429 in the first place.
+      if (i < batches.length - 1) await new Promise((r) => setTimeout(r, 350));
     }
   }
 
   await chrome.storage.session.set({ status: 'Translation complete!' });
 }
 
+// One request per BATCH, not per word. The old shape fired 50 parallel
+// requests per batch — a normal browsing session tripped Google's per-IP
+// limit and every translation on every page died with a 429.
+let translateCooldownUntil = 0;
+const TRANSLATE_COOLDOWN_MS = 60_000;
+
 async function googleTranslateBatch(words) {
+  const url =
+    'https://translate.googleapis.com/translate_a/single' +
+    `?client=gtx&sl=en&tl=ko&dt=t&q=${encodeURIComponent(words.join('\n'))}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Google Translate ${response.status}`);
+  const data = await response.json();
+
+  // data[0] is a list of [translated, original, ...] segments. Newlines keep
+  // one word per segment; match by the echoed original rather than by index
+  // so a merged or reordered segment degrades to a missing entry, not a
+  // wrong pairing. Missing words stay untranslated and retry next pass.
   const results = {};
-  const promises = words.map(async (word) => {
-    const url =
-      'https://translate.googleapis.com/translate_a/single' +
-      `?client=gtx&sl=en&tl=ko&dt=t&q=${encodeURIComponent(word)}`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Google Translate ${response.status}`);
-    const data = await response.json();
-    results[word] = data[0][0][0];
-  });
-  await Promise.all(promises);
+  for (const seg of data[0] || []) {
+    const orig = String(seg?.[1] ?? '')
+      .trim()
+      .toLowerCase();
+    const trans = String(seg?.[0] ?? '').trim();
+    if (orig && trans && words.includes(orig)) results[orig] = trans;
+  }
   return results;
 }
 

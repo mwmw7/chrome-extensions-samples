@@ -178,6 +178,10 @@ chrome.storage.local.onChanged.addListener((changes) => {
   if (changes.reviewMeta) {
     reviewMeta = changes.reviewMeta.newValue || {};
   }
+  // Purchase lands in another surface (options refresh, checkout tab). The
+  // me cache is the one storage key that changes then — without this, the
+  // counter keeps showing "n/200" until an unrelated save touches it.
+  if (changes.me) updateSavedCount();
   if (changes.limitNotice) {
     const notice = changes.limitNotice.newValue;
     const n = notice?.rejected?.length || 0;
