@@ -507,6 +507,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PANEL_OPENED') {
     extractFromActiveTab();
   }
+  if (message.type === 'CLASSIFY_WORDS') {
+    classifyWords(message.words).then(sendResponse, (err) =>
+      sendResponse({ error: String(err?.message || err) })
+    );
+    return true;
+  }
   if (message.type === 'TRANSLATE_WORDS') {
     translateWords(message.words).then(sendResponse, (err) =>
       sendResponse({ error: String(err?.message || err) })
@@ -988,6 +994,76 @@ async function openCheckout() {
   const result = await proxyPost('/v1/checkout', {}, token);
   if (result.url) chrome.tabs.create({ url: result.url });
   return result;
+}
+
+// --- AI level classification --------------------------------
+// One Claude call classifies a batch of words into level (basic/int/adv)
+// plus TOEFL/IELTS membership; results cache forever per word in
+// storage.local.wordLevels. Always Haiku regardless of the user's chosen
+// detail model — this runs across hundreds of words per page, and level
+// tagging doesn't need Opus.
+const CLASSIFY_MODEL = 'claude-haiku-4-5-20251001';
+const CLASSIFY_BATCH = 80;
+
+const CLASSIFY_PROMPT = (
+  words
+) => `Classify each English word for Korean learners preparing for exams.
+For each word return [level, toefl, ielts]:
+- level: "b" = basic/everyday, "i" = intermediate, "a" = advanced
+- toefl: 1 if it is commonly-tested TOEFL vocabulary, else 0
+- ielts: 1 if it is commonly-tested IELTS (academic) vocabulary, else 0
+Return ONLY valid JSON (no markdown), mapping every given word:
+{"example":["i",1,0]}
+Words: ${words.join(', ')}`;
+
+async function classifyWords(requested) {
+  const backend = await resolveBackend();
+  if (backend.error) return backend; // NO_API_KEY
+
+  const list = [
+    ...new Set(
+      (requested || []).map((w) =>
+        String(w || '')
+          .trim()
+          .toLowerCase()
+      )
+    )
+  ].filter(Boolean);
+
+  const stored = await chrome.storage.local.get('wordLevels');
+  const known = stored.wordLevels || {};
+  const missing = list.filter(
+    (w) => !Object.prototype.hasOwnProperty.call(known, w)
+  );
+  if (!missing.length) return { ok: true, classified: 0 };
+
+  let classified = 0;
+  for (const batch of chunk(missing, CLASSIFY_BATCH)) {
+    try {
+      const map = await callClaude(
+        CLASSIFY_PROMPT(batch),
+        backend.settings.apiKey,
+        CLASSIFY_MODEL
+      );
+      const st = await chrome.storage.local.get('wordLevels');
+      const merged = { ...(st.wordLevels || {}) };
+      for (const w of batch) {
+        const v = map?.[w];
+        if (Array.isArray(v)) {
+          merged[w] = {
+            lv: v[0] === 'a' ? 'a' : v[0] === 'i' ? 'i' : 'b',
+            tf: v[1] ? 1 : 0,
+            ie: v[2] ? 1 : 0
+          };
+          classified += 1;
+        }
+      }
+      await chrome.storage.local.set({ wordLevels: merged });
+    } catch (err) {
+      return { error: err.message, classified };
+    }
+  }
+  return { ok: true, classified };
 }
 
 // --- Own-key provider (Claude only) -------------------------

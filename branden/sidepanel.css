@@ -267,6 +267,11 @@ body {
   background: #ede9fe;
 }
 
+.badge-ielts {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
 /* Save button */
 
 .save-btn {

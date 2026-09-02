@@ -35,6 +35,74 @@ let currentFilter = 'all'; // 'all' | 'basic' | 'intermediate' | 'advanced' | 't
 // missing translations get requested). Scrolling the sentinel into view
 // extends the window by another page — a tab full of words costs one
 // 30-word translate request instead of the whole page's worth.
+// AI-derived word levels, cached forever per word:
+// { word: { lv: 'b'|'i'|'a', tf: 0|1, ie: 0|1 } }
+// Static lists stay as the instant first answer; AI refines them and is the
+// only source for IELTS (no bundled list exists for it).
+let wordLevels = {};
+let classifyTimer = null;
+let classifyAllInFlight = false;
+
+function aiLevel(w) {
+  return Object.prototype.hasOwnProperty.call(wordLevels, w)
+    ? wordLevels[w]
+    : null;
+}
+function wordIsAdv(w) {
+  const a = aiLevel(w);
+  return a ? a.lv === 'a' : advancedWords.has(w);
+}
+function wordIsInt(w) {
+  const a = aiLevel(w);
+  return a ? a.lv === 'i' : intermediateWords.has(w);
+}
+function wordIsToefl(w) {
+  return toeflWords.has(w) || aiLevel(w)?.tf === 1;
+}
+function wordIsIelts(w) {
+  return aiLevel(w)?.ie === 1;
+}
+
+function requestClassification(words) {
+  const missing = words.filter((w) => !aiLevel(w));
+  if (!missing.length) return;
+  clearTimeout(classifyTimer);
+  classifyTimer = setTimeout(() => {
+    chrome.runtime.sendMessage(
+      { type: 'CLASSIFY_WORDS', words: missing },
+      () => {}
+    );
+  }, 400);
+}
+
+// Filters need the WHOLE page classified to be truthful — a lazy window
+// would silently hide unclassified IELTS words. One page ≈ $0.002 on
+// Haiku, cached forever per word.
+function classifyAll() {
+  const missing = allWords.filter((w) => !aiLevel(w));
+  if (!missing.length || classifyAllInFlight) return;
+  classifyAllInFlight = true;
+  statusEl.textContent = `AI 분류 중… (${missing.length}단어)`;
+  chrome.runtime.sendMessage(
+    { type: 'CLASSIFY_WORDS', words: missing },
+    (resp) => {
+      classifyAllInFlight = false;
+      if (resp?.error === 'NO_API_KEY') {
+        showToast(
+          'AI 분류에는 Claude API 키가 필요합니다. Settings에서 입력하세요.'
+        );
+        return;
+      }
+      if (resp?.error) {
+        showToast(`분류 실패: ${resp.error}`);
+        return;
+      }
+      statusEl.textContent = '';
+      render();
+    }
+  );
+}
+
 const PAGE_SIZE = 30;
 let visibleCount = PAGE_SIZE;
 let translateTimer = null;
@@ -139,6 +207,7 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
     btn.classList.add('active');
     openWord = null;
     visibleCount = PAGE_SIZE;
+    if (currentFilter !== 'all') classifyAll();
     render();
   });
 });
@@ -173,9 +242,10 @@ chrome.storage.session.get(
 // Load persistent cache from local (savedWords mirror lives here too — the
 // server owns the source of truth, this is just what the SW last synced).
 chrome.storage.local.get(
-  ['translations', 'wordDetails', 'savedWords', 'reviewMeta'],
+  ['translations', 'wordDetails', 'savedWords', 'reviewMeta', 'wordLevels'],
   (data) => {
     if (data.translations) translations = data.translations;
+    if (data.wordLevels) wordLevels = data.wordLevels;
     if (data.wordDetails) wordDetails = data.wordDetails;
     if (data.savedWords) savedWords = data.savedWords;
     if (data.reviewMeta) reviewMeta = data.reviewMeta;
@@ -205,6 +275,7 @@ chrome.storage.session.onChanged.addListener((changes) => {
 chrome.storage.local.onChanged.addListener((changes) => {
   if (changes.translations) translations = changes.translations.newValue || {};
   if (changes.wordDetails) wordDetails = changes.wordDetails.newValue || {};
+  if (changes.wordLevels) wordLevels = changes.wordLevels.newValue || {};
   if (changes.savedWords) {
     savedWords = changes.savedWords.newValue || {};
     updateSavedCount();
@@ -329,15 +400,15 @@ function render() {
   // Apply level filter
   let levelFiltered = sourceWords;
   if (currentFilter === 'basic') {
-    levelFiltered = sourceWords.filter(
-      (w) => !intermediateWords.has(w) && !advancedWords.has(w)
-    );
+    levelFiltered = sourceWords.filter((w) => !wordIsInt(w) && !wordIsAdv(w));
   } else if (currentFilter === 'intermediate') {
-    levelFiltered = sourceWords.filter((w) => intermediateWords.has(w));
+    levelFiltered = sourceWords.filter((w) => wordIsInt(w));
   } else if (currentFilter === 'advanced') {
-    levelFiltered = sourceWords.filter((w) => advancedWords.has(w));
+    levelFiltered = sourceWords.filter((w) => wordIsAdv(w));
   } else if (currentFilter === 'toefl') {
-    levelFiltered = sourceWords.filter((w) => toeflWords.has(w));
+    levelFiltered = sourceWords.filter((w) => wordIsToefl(w));
+  } else if (currentFilter === 'ielts') {
+    levelFiltered = sourceWords.filter((w) => wordIsIelts(w));
   }
 
   const filtered = levelFiltered.filter(
@@ -355,10 +426,11 @@ function render() {
         basic: ' (Basic)',
         intermediate: ' (INT)',
         advanced: ' (ADV)',
-        toefl: ' (TOEFL)'
+        toefl: ' (TOEFL)',
+        ielts: ' (IELTS)'
       }[currentFilter] || '';
-    const intCount = filtered.filter((w) => intermediateWords.has(w)).length;
-    const advCount = filtered.filter((w) => advancedWords.has(w)).length;
+    const intCount = filtered.filter((w) => wordIsInt(w)).length;
+    const advCount = filtered.filter((w) => wordIsAdv(w)).length;
     wordCountEl.textContent = `${translatedCount}/${filtered.length} translated${filterLabel} · ${intCount} INT · ${advCount} ADV`;
   }
 
@@ -370,9 +442,10 @@ function render() {
   listObserver.disconnect();
   wordListEl.innerHTML = '';
   for (const word of windowed) {
-    const isInt = intermediateWords.has(word);
-    const isAdv = advancedWords.has(word);
-    const isToefl = toeflWords.has(word);
+    const isInt = wordIsInt(word);
+    const isAdv = wordIsAdv(word);
+    const isToefl = wordIsToefl(word);
+    const isIelts = wordIsIelts(word);
     const isSaved = hasWord(savedWords, word);
     const isOpen = openWord === word;
 
@@ -418,6 +491,12 @@ function render() {
       tBadge.className = 'badge badge-toefl';
       tBadge.textContent = 'TOEFL';
       mainLine.appendChild(tBadge);
+    }
+    if (isIelts) {
+      const iBadge = document.createElement('span');
+      iBadge.className = 'badge badge-ielts';
+      iBadge.textContent = 'IELTS';
+      mainLine.appendChild(iBadge);
     }
     if (isAdv) {
       const badge = document.createElement('span');
@@ -493,8 +572,9 @@ function render() {
   }
   wordListEl.scrollTop = scrollTop;
 
-  // Only the words on screen earn a Google request.
+  // Only the words on screen earn a Google request — and an AI level pass.
   requestVisibleTranslations(windowed);
+  if (currentTab !== 'saved') requestClassification(windowed);
 }
 
 // =====================
